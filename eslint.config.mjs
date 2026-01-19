@@ -12,6 +12,10 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Ignore reference code (Python backend examples)
+    "reference-code/**",
+    // Ignore Convex generated files
+    "convex/_generated/**",
   ]),
 ]);
 

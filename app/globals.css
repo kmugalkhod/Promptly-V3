@@ -1,5 +1,10 @@
 @import "tailwindcss";
 
+/* Exclude prompt files from Tailwind scanning - they contain example class names */
+@source not "../lib/prompts/**/*";
+@source not "../.claude/**/*";
+@source not "../reference-code/**/*";
+
 :root {
   --background: #ffffff;
   --foreground: #171717;
