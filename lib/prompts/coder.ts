@@ -224,6 +224,37 @@ The E2B template uses Tailwind v4. If you need custom CSS in globals.css:
 @import "tailwindcss";
 \`\`\`
 
+## ⚠️ FONTS - NEVER USE @import url() IN CSS!
+
+**Fonts MUST be loaded via next/font/google in layout.tsx, NOT in globals.css!**
+
+\`\`\`css
+/* ❌ WRONG - causes build error! @import must be first, but Tailwind expands to 3000+ lines */
+@import "tailwindcss";
+/* ... Tailwind generates thousands of lines here ... */
+@import url('https://fonts.googleapis.com/css2?family=...');  /* ERROR: @import after other rules! */
+
+/* ❌ ALSO WRONG - even at top, next/font is better */
+@import url('https://fonts.googleapis.com/css2?family=...');
+@import "tailwindcss";
+\`\`\`
+
+**✅ CORRECT - Use next/font/google in layout.tsx:**
+\`\`\`tsx
+import { Inter, Playfair_Display } from 'next/font/google'
+
+const inter = Inter({ subsets: ['latin'], variable: '--font-body' })
+const playfair = Playfair_Display({ subsets: ['latin'], variable: '--font-display' })
+
+// In html tag: className={\`\${inter.variable} \${playfair.variable}\`}
+\`\`\`
+
+**CSS IMPORT RULES:**
+1. globals.css should have ONLY ONE import: \`@import "tailwindcss";\`
+2. This import MUST be the FIRST line (after optional comments)
+3. NEVER add \`@import url()\` for fonts
+4. NEVER add multiple Tailwind imports (\`@import "tailwindcss/base"\` etc.)
+
 FILE PATHS - Use these exact relative paths (no src/ directory):
 - app/layout.tsx (MUST CREATE FIRST - required for styles!)
 - app/globals.css (⚠️ ALREADY EXISTS - only modify if adding custom CSS, use v4 syntax!)
@@ -705,6 +736,71 @@ useEffect(() => { setWidth(window.innerWidth) }, [])
 
 ---
 
+## ⚠️ STATE MANAGEMENT - DO NOT USE useSyncExternalStore DIRECTLY
+
+**NEVER create custom stores with useSyncExternalStore!** It causes SSR hydration errors.
+
+\`\`\`tsx
+// ❌ WRONG - causes "getServerSnapshot should be cached" error
+import { useSyncExternalStore } from 'react'
+
+const store = { state: [], listeners: new Set() }
+function subscribe(cb) { store.listeners.add(cb); return () => store.listeners.delete(cb) }
+function getSnapshot() { return store.state }  // NOT SSR-safe!
+function getServerSnapshot() { return [] }      // Creates new array each call - BROKEN!
+
+export function useStore() {
+  return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot)
+}
+
+// ❌ ALSO WRONG - any custom external store pattern
+const createStore = () => { /* ... */ }
+\`\`\`
+
+**✅ CORRECT - Use simple React patterns:**
+\`\`\`tsx
+// Option 1: useState with initial data (PREFERRED for most apps)
+'use client'
+const [todos, setTodos] = useState<Todo[]>([
+  { id: '1', text: 'Sample task', completed: false },
+])
+
+// Option 2: useReducer for complex state
+'use client'
+const [state, dispatch] = useReducer(reducer, initialState)
+
+// Option 3: Context + useState for shared state
+'use client'
+const TodoContext = createContext<TodoContextType | null>(null)
+
+export function TodoProvider({ children }: { children: React.ReactNode }) {
+  const [todos, setTodos] = useState<Todo[]>(INITIAL_TODOS)
+  return (
+    <TodoContext.Provider value={{ todos, setTodos }}>
+      {children}
+    </TodoContext.Provider>
+  )
+}
+
+// Option 4: zustand (if architecture specifies - handles SSR correctly)
+// Only use if explicitly listed in PACKAGES section of architecture.md
+import { create } from 'zustand'
+const useStore = create((set) => ({
+  todos: INITIAL_TODOS,
+  addTodo: (todo) => set((state) => ({ todos: [...state.todos, todo] })),
+}))
+\`\`\`
+
+**STATE MANAGEMENT RULES:**
+1. **Default to useState** - sufficient for 90% of apps
+2. **Use useReducer** - for complex state with many actions
+3. **Use Context + useState** - when state needs to be shared across components
+4. **Use zustand ONLY if architecture.md PACKAGES section lists it**
+5. **NEVER create lib/store.ts with custom useSyncExternalStore patterns**
+6. **NEVER create custom subscribe/getSnapshot patterns**
+
+---
+
 ## RUNTIME ERROR PREVENTION
 
 **SelectItem:** NEVER use value="" - use value="none" for empty options
@@ -741,6 +837,8 @@ setCount(prev => prev + 1)
 - Create duplicate files
 - Use gray-* classes (use slate-* instead)
 - Use empty string as SelectItem value
+- Create lib/store.ts with useSyncExternalStore - use useState/Context instead!
+- Use useSyncExternalStore directly - causes SSR hydration errors!
 
 ---
 

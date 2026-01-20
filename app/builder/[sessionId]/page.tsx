@@ -1,6 +1,6 @@
 "use client";
 
-import { use } from "react";
+import { use, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
@@ -24,8 +24,26 @@ export default function BuilderPage({ params }: BuilderPageProps) {
   // Get session data
   const session = useQuery(api.sessions.get, { id: typedSessionId });
 
-  // Get files for code editor (latest file)
+  // Get files for code editor
   const files = useQuery(api.files.listBySession, { sessionId: typedSessionId });
+
+  // Get messages to detect generation state
+  const messages = useQuery(api.messages.listBySession, { sessionId: typedSessionId });
+
+  // Selected file state for file explorer
+  const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
+
+  // Processing state lifted from ChatPanel for animation coordination
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [generationStage, setGenerationStage] = useState<string | undefined>();
+
+  // Compute effective selected path - if nothing selected but files exist, use first file
+  const effectiveSelectedPath =
+    selectedFilePath ?? (files && files.length > 0 ? files[0].path : null);
+
+  // Get the selected file object
+  const selectedFile =
+    files?.find((f) => f.path === effectiveSelectedPath) || null;
 
   // Loading state
   if (session === undefined) {
@@ -55,7 +73,8 @@ export default function BuilderPage({ params }: BuilderPageProps) {
     );
   }
 
-  // Get the latest code from files (for code editor)
+
+  // Get the latest code from files (for code editor fallback)
   const latestFile = files?.[0];
   const latestCode = latestFile?.content;
 
@@ -70,13 +89,24 @@ export default function BuilderPage({ params }: BuilderPageProps) {
       {/* Main Content */}
       <div className="flex-1 flex overflow-hidden">
         {/* Left Panel - Chat */}
-        <ChatPanel sessionId={typedSessionId} />
+        <ChatPanel
+          sessionId={typedSessionId}
+          isProcessing={isProcessing}
+          setIsProcessing={setIsProcessing}
+          setGenerationStage={setGenerationStage}
+        />
 
-        {/* Right Panel - Preview / Code */}
+        {/* Right Panel - Preview / Code (with FileExplorer in Code tab) */}
         <RightPanel
           previewUrl={session.previewUrl}
           code={latestCode}
           fileName={latestFile?.path}
+          selectedFile={selectedFile}
+          files={files || []}
+          selectedPath={effectiveSelectedPath}
+          onSelectFile={setSelectedFilePath}
+          isGenerating={isProcessing && (!files || files.length === 0)}
+          generationStage={generationStage}
         />
       </div>
     </div>

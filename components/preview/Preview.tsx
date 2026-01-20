@@ -12,11 +12,14 @@ import {
 import { PreviewLoading } from "./PreviewLoading";
 import { PreviewError } from "./PreviewError";
 import { SandboxStatus } from "./SandboxStatus";
+import { GenerationAnimation } from "./GenerationAnimation";
 
 interface PreviewProps {
   previewUrl?: string;
   code?: string;
   onRetry?: () => void;
+  isGenerating?: boolean;
+  generationStage?: string;
 }
 
 type ViewportSize = "desktop" | "tablet" | "mobile";
@@ -58,7 +61,7 @@ const defaultHtml = `
 </html>
 `;
 
-export function Preview({ previewUrl, code, onRetry }: PreviewProps) {
+export function Preview({ previewUrl, code, onRetry, isGenerating, generationStage }: PreviewProps) {
   const [viewport, setViewport] = useState<ViewportSize>("desktop");
   const [refreshCount, setRefreshCount] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
@@ -217,7 +220,9 @@ export function Preview({ previewUrl, code, onRetry }: PreviewProps) {
         <div
           className={`${viewportClasses[viewport]} h-full transition-all duration-300`}
         >
-          {hasError ? (
+          {isGenerating ? (
+            <GenerationAnimation stage={generationStage} />
+          ) : hasError ? (
             <PreviewError message={errorMessage} onRetry={handleRetry} />
           ) : isLoading ? (
             <PreviewLoading />
