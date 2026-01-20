@@ -62,6 +62,71 @@ export const CHAT_PROMPT_WITH_EDIT_SCOPE = `You are an expert Next.js developer 
 - Add 'use client' directive if component uses hooks/events
 - Keep TypeScript types consistent
 
+## ⚠️ Common Error Fixes
+
+### "getServerSnapshot should be cached" Error
+This error means the code uses \`useSyncExternalStore\` incorrectly. **The fix is to REPLACE the custom store with standard React patterns:**
+
+\`\`\`tsx
+// ❌ WRONG - causes SSR hydration error
+import { useSyncExternalStore } from 'react'
+const store = { state: [], listeners: new Set() }
+export function useStore() {
+  return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot)
+}
+
+// ✅ CORRECT - Replace with useState or Context
+'use client'
+import { useState, createContext, useContext } from 'react'
+
+// Option 1: Simple useState in component
+const [items, setItems] = useState(INITIAL_DATA)
+
+// Option 2: Context for shared state
+const StoreContext = createContext(null)
+export function StoreProvider({ children }) {
+  const [state, setState] = useState(INITIAL_STATE)
+  return <StoreContext.Provider value={{ state, setState }}>{children}</StoreContext.Provider>
+}
+export function useStore() {
+  return useContext(StoreContext)
+}
+\`\`\`
+
+**When fixing this error:**
+1. Remove any useSyncExternalStore imports
+2. Remove custom subscribe/getSnapshot/getServerSnapshot functions
+3. Replace with useState or Context + useState pattern
+4. Update all components using the store to use the new pattern
+
+### CSS Build Errors (Tailwind v4)
+
+**"is not exported" or "@import rules must precede all rules"** errors mean:
+1. Wrong Tailwind syntax, OR
+2. @import url() used incorrectly
+
+**Fix:**
+\`\`\`css
+/* ❌ WRONG - old v3 syntax */
+@import "tailwindcss/base";
+@import "tailwindcss/components";
+@import "tailwindcss/utilities";
+
+/* ❌ WRONG - font @import after tailwind */
+@import "tailwindcss";
+/* ...tailwind expands here... */
+@import url('https://fonts.googleapis.com/...');
+
+/* ✅ CORRECT - only this ONE import */
+@import "tailwindcss";
+
+:root {
+  /* CSS variables here */
+}
+\`\`\`
+
+**Font Loading:** Use \`next/font/google\` in layout.tsx, NOT @import url() in CSS.
+
 ## When to Recommend Architecture Agent
 - New major features (auth, payments, new pages)
 - Structural/routing changes
@@ -108,6 +173,44 @@ export const CHAT_PROMPT_WITH_CONTEXT = `You are an expert Next.js developer hel
 - Content updates
 - Small tweaks
 - Bug fixes
+
+## ⚠️ Common Error Fixes
+
+### "getServerSnapshot should be cached" Error
+Replace useSyncExternalStore with useState or Context:
+\`\`\`tsx
+// ❌ WRONG - useSyncExternalStore causes SSR errors
+// ✅ CORRECT - Use useState or Context + useState
+const [items, setItems] = useState(INITIAL_DATA)
+\`\`\`
+
+### CSS Build Errors (Tailwind v4)
+
+**"is not exported" or "@import rules must precede all rules"** errors mean:
+1. Wrong Tailwind syntax, OR
+2. @import url() used incorrectly
+
+**Fix:**
+\`\`\`css
+/* ❌ WRONG - old v3 syntax */
+@import "tailwindcss/base";
+@import "tailwindcss/components";
+@import "tailwindcss/utilities";
+
+/* ❌ WRONG - font @import after tailwind */
+@import "tailwindcss";
+/* ...tailwind expands here... */
+@import url('https://fonts.googleapis.com/...');
+
+/* ✅ CORRECT - only this ONE import */
+@import "tailwindcss";
+
+:root {
+  /* CSS variables here */
+}
+\`\`\`
+
+**Font Loading:** Use \`next/font/google\` in layout.tsx, NOT @import url() in CSS.
 
 Keep responses concise. Execute changes, then summarize.
 `;
@@ -158,6 +261,44 @@ export const CHAT_PROMPT_SMART_CONTEXT = `You are an expert Next.js developer he
 - Use Tailwind CSS for styling
 - Use shadcn/ui components when available
 - Add 'use client' if component uses hooks/events
+
+## ⚠️ Common Error Fixes
+
+### "getServerSnapshot should be cached" Error
+Replace useSyncExternalStore with useState or Context:
+\`\`\`tsx
+// ❌ WRONG - useSyncExternalStore causes SSR errors
+// ✅ CORRECT - Use useState or Context + useState
+const [items, setItems] = useState(INITIAL_DATA)
+\`\`\`
+
+### CSS Build Errors (Tailwind v4)
+
+**"is not exported" or "@import rules must precede all rules"** errors mean:
+1. Wrong Tailwind syntax, OR
+2. @import url() used incorrectly
+
+**Fix:**
+\`\`\`css
+/* ❌ WRONG - old v3 syntax */
+@import "tailwindcss/base";
+@import "tailwindcss/components";
+@import "tailwindcss/utilities";
+
+/* ❌ WRONG - font @import after tailwind */
+@import "tailwindcss";
+/* ...tailwind expands here... */
+@import url('https://fonts.googleapis.com/...');
+
+/* ✅ CORRECT - only this ONE import */
+@import "tailwindcss";
+
+:root {
+  /* CSS variables here */
+}
+\`\`\`
+
+**Font Loading:** Use \`next/font/google\` in layout.tsx, NOT @import url() in CSS.
 
 Keep responses concise. Execute changes, then summarize.
 `;

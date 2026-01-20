@@ -3,6 +3,7 @@
 import { useState } from "react";
 import Editor from "@monaco-editor/react";
 import { Copy, Check, Download, Loader2 } from "lucide-react";
+import { getLanguageFromPath } from "@/lib/utils/language-map";
 
 interface CodeEditorProps {
   code: string;
@@ -14,9 +15,11 @@ interface CodeEditorProps {
 export function CodeEditor({
   code,
   fileName = "index.html",
-  language = "html",
+  language,
   onChange,
 }: CodeEditorProps) {
+  // Auto-detect language from fileName if not explicitly provided
+  const detectedLanguage = language || getLanguageFromPath(fileName);
   const [copied, setCopied] = useState(false);
 
   const handleCopy = async () => {
@@ -36,7 +39,7 @@ export function CodeEditor({
   };
 
   return (
-    <div className="flex flex-col h-full bg-zinc-900">
+    <div className="flex-1 flex flex-col h-full bg-zinc-900">
       {/* Editor Toolbar */}
       <div className="h-12 border-b border-zinc-800 flex items-center justify-between px-4">
         <div className="flex items-center gap-2">
@@ -69,7 +72,7 @@ export function CodeEditor({
       <div className="flex-1">
         <Editor
           height="100%"
-          defaultLanguage={language}
+          defaultLanguage={detectedLanguage}
           value={code}
           onChange={(value) => onChange?.(value || "")}
           theme="vs-dark"

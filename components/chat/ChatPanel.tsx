@@ -9,6 +9,9 @@ import { MessageInput } from "./MessageInput";
 
 interface ChatPanelProps {
   sessionId: Id<"sessions">;
+  isProcessing: boolean;
+  setIsProcessing: (value: boolean) => void;
+  setGenerationStage: (stage: string | undefined) => void;
 }
 
 /**
@@ -33,8 +36,12 @@ function isNewProjectRequest(message: string): boolean {
   return keywords.some((kw) => messageLower.includes(kw));
 }
 
-export function ChatPanel({ sessionId }: ChatPanelProps) {
-  const [isProcessing, setIsProcessing] = useState(false);
+export function ChatPanel({
+  sessionId,
+  isProcessing,
+  setIsProcessing,
+  setGenerationStage,
+}: ChatPanelProps) {
   const [error, setError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
@@ -54,6 +61,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
     setIsProcessing(true);
     setError(null);
     setStatusMessage(null);
+    setGenerationStage("Starting...");
 
     try {
       // Save user message first
@@ -70,6 +78,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
       if (!hasFiles && !hasSandbox && isNewProjectRequest(message)) {
         // New project - use generate action
         setStatusMessage("Creating sandbox and generating app...");
+        setGenerationStage("Creating sandbox...");
 
         const result = await generate({ sessionId, prompt: message });
 
@@ -101,6 +110,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
         if (!hasSandbox) {
           // Need to create sandbox first
           setStatusMessage("Creating sandbox...");
+          setGenerationStage("Creating sandbox...");
           const genResult = await generate({ sessionId, prompt: message });
           if (!genResult.success) {
             setError(genResult.error ?? "Failed to create sandbox");
@@ -109,6 +119,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
         }
 
         setStatusMessage("Processing your request...");
+        setGenerationStage("Writing code...");
         const result = await modify({ sessionId, message });
 
         if (result.success) {
@@ -143,6 +154,7 @@ export function ChatPanel({ sessionId }: ChatPanelProps) {
     } finally {
       setIsProcessing(false);
       setStatusMessage(null);
+      setGenerationStage(undefined);
     }
   };
 
