@@ -66,6 +66,109 @@ export const create = action({
 });
 
 /**
+ * Initialize or restore sandbox for an existing session.
+ * Called when entering the builder page to ensure sandbox is ready.
+ * - If session has no files, returns early (new project flow handles creation)
+ * - If sandbox is still alive, returns existing info
+ * - If sandbox expired, creates fresh one and restores files from Convex
+ */
+export const initializeForSession = action({
+  args: {
+    sessionId: v.id("sessions"),
+  },
+  handler: async (ctx, args): Promise<{
+    success: boolean;
+    previewUrl?: string;
+    sandboxId?: string;
+    error?: string;
+  }> => {
+    // 1. Get session
+    const session = await ctx.runQuery(api.sessions.get, { id: args.sessionId });
+    if (!session) {
+      return { success: false, error: "Session not found" };
+    }
+
+    // 2. Get files from Convex
+    const files = await ctx.runQuery(api.files.listBySession, { sessionId: args.sessionId });
+
+    // 3. If no files, don't create sandbox (new project flow will handle it)
+    if (!files || files.length === 0) {
+      return { success: true }; // No sandbox needed yet
+    }
+
+    // 4. Try to connect to existing sandbox first
+    if (session.sandboxId) {
+      try {
+        const sandbox = await Sandbox.connect(session.sandboxId);
+        const result = await sandbox.commands.run("echo ok");
+        if (result.exitCode === 0) {
+          // Sandbox still alive, just return current info
+          console.log(`[initializeForSession] Sandbox ${session.sandboxId} still alive`);
+          return {
+            success: true,
+            previewUrl: session.previewUrl,
+            sandboxId: session.sandboxId,
+          };
+        }
+      } catch {
+        // Sandbox expired, will create new one
+        console.log(`[initializeForSession] Sandbox expired, creating new one...`);
+      }
+    }
+
+    // 5. Create fresh sandbox
+    console.log(`[initializeForSession] Creating new sandbox for session ${args.sessionId}`);
+    const sandbox = await Sandbox.create(TEMPLATE, {
+      timeoutMs: TIMEOUT * 1000,
+    });
+
+    // Wait for sandbox dev server to be fully ready
+    console.log(`[initializeForSession] Waiting for dev server to start...`);
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+
+    // 6. Clean up default files
+    await sandbox.commands.run(`rm -f ${PROJECT_DIR}/app/page.tsx`);
+    await sandbox.commands.run(`rm -f ${PROJECT_DIR}/components/ui/resizable.tsx`);
+
+    // 7. Restore all files from Convex
+    let restoredCount = 0;
+    for (const file of files) {
+      try {
+        const fullPath = `${PROJECT_DIR}/${file.path}`;
+        const dirPath = fullPath.substring(0, fullPath.lastIndexOf("/"));
+        if (dirPath) {
+          await sandbox.commands.run(`mkdir -p ${dirPath}`);
+        }
+        await sandbox.files.write(fullPath, file.content);
+        restoredCount++;
+      } catch (error) {
+        console.error(`[initializeForSession] Failed to restore ${file.path}:`, error);
+      }
+    }
+    console.log(`[initializeForSession] Restored ${restoredCount}/${files.length} files`);
+
+    // 8. Wait for Next.js hot reload to process restored files
+    // The file writes above should trigger hot reload automatically
+    console.log(`[initializeForSession] Waiting for hot reload...`);
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+
+    const sandboxId = sandbox.sandboxId;
+    const previewUrl = `https://${sandbox.getHost(3000)}`;
+
+    // 10. Update session with new sandbox info
+    await ctx.runMutation(api.sessions.update, {
+      id: args.sessionId,
+      sandboxId,
+      previewUrl,
+      status: "active",
+    });
+
+    console.log(`[initializeForSession] Sandbox ready: ${sandboxId}`);
+    return { success: true, previewUrl, sandboxId };
+  },
+});
+
+/**
  * Write a file to the sandbox (triggers hot reload).
  * Also backs up the file to Convex for persistence.
  */
@@ -165,6 +268,10 @@ export const recreate = action({
       timeoutMs: TIMEOUT * 1000,
     });
 
+    // Wait for sandbox dev server to be fully ready
+    console.log(`[recreate] Waiting for dev server to start...`);
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+
     // Clean up default files
     await sandbox.commands.run(`rm -f ${PROJECT_DIR}/app/page.tsx`);
     await sandbox.commands.run(`rm -f ${PROJECT_DIR}/components/ui/resizable.tsx`);
@@ -195,6 +302,10 @@ export const recreate = action({
     }
 
     console.log(`Sandbox recreated: ${sandboxId}, restored ${restoredFiles} files`);
+
+    // Wait for hot reload to process restored files
+    console.log(`[recreate] Waiting for hot reload...`);
+    await new Promise((resolve) => setTimeout(resolve, 5000));
 
     // Update session with new sandbox info
     await ctx.runMutation(api.sessions.update, {
@@ -293,6 +404,10 @@ export const extendTimeout = action({
           timeoutMs: TIMEOUT * 1000,
         });
 
+        // Wait for sandbox dev server to be fully ready
+        console.log(`[extendTimeout] Waiting for dev server to start...`);
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+
         // Clean up default files
         await newSandbox.commands.run(`rm -f ${PROJECT_DIR}/app/page.tsx`);
         await newSandbox.commands.run(`rm -f ${PROJECT_DIR}/components/ui/resizable.tsx`);
@@ -322,6 +437,10 @@ export const extendTimeout = action({
         }
 
         console.log(`[extendTimeout] Sandbox recreated: ${newSandboxId}, restored ${restoredFiles} files`);
+
+        // Wait for hot reload to process restored files
+        console.log(`[extendTimeout] Waiting for hot reload...`);
+        await new Promise((resolve) => setTimeout(resolve, 5000));
 
         // Update session with new sandbox info
         await ctx.runMutation(api.sessions.update, {

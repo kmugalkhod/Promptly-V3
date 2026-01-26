@@ -17,6 +17,7 @@ interface RightPanelProps {
   onSelectFile?: (path: string) => void;
   isGenerating?: boolean;
   generationStage?: string;
+  sandboxStatus?: "idle" | "initializing" | "ready" | "error";  // renamed to sandboxInitStatus in Preview
 }
 
 type ActiveTab = "preview" | "code";
@@ -32,6 +33,7 @@ export function RightPanel({
   onSelectFile,
   isGenerating,
   generationStage,
+  sandboxStatus,
 }: RightPanelProps) {
   const [activeTab, setActiveTab] = useState<ActiveTab>("preview");
 
@@ -87,6 +89,7 @@ export function RightPanel({
             onRetry={onRetry}
             isGenerating={isGenerating}
             generationStage={generationStage}
+            sandboxInitStatus={sandboxStatus}
           />
         ) : (
           <div className="flex-1 flex h-full">

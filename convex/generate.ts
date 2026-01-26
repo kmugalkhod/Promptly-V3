@@ -512,6 +512,36 @@ export const generate = action({
       console.log(`[generate] Created ${coderResult.filesChanged.length} files`);
       console.log(`[generate] Files: ${coderResult.filesChanged.join(", ")}`);
 
+      // 6. Ensure all key files are saved to Convex (including template files that might have been used)
+      console.log("[generate] Syncing all key files to Convex...");
+      const keyFiles = [
+        "app/globals.css",
+        "app/layout.tsx",
+        "app/page.tsx",
+        "tailwind.config.ts",
+        "tailwind.config.js",
+      ];
+
+      for (const filePath of keyFiles) {
+        // Skip if already saved
+        if (files.has(filePath)) continue;
+
+        try {
+          const fullPath = `${PROJECT_DIR}/${filePath}`;
+          const content = await sandbox.files.read(fullPath);
+          if (content) {
+            await ctx.runMutation(api.files.upsert, {
+              sessionId,
+              path: filePath,
+              content,
+            });
+            console.log(`[generate] Synced template file: ${filePath}`);
+          }
+        } catch {
+          // File doesn't exist, skip
+        }
+      }
+
       return {
         success: true,
         appName,
@@ -732,6 +762,32 @@ export const modify = action({
       }
 
       console.log(`[modify] Modified ${chatResult.filesChanged.length} files`);
+
+      // 8. Ensure all key files are saved to Convex
+      console.log("[modify] Syncing key files to Convex...");
+      const keyFiles = [
+        "app/globals.css",
+        "app/layout.tsx",
+        "app/page.tsx",
+      ];
+
+      for (const filePath of keyFiles) {
+        if (files.has(filePath)) continue;
+        try {
+          const fullPath = `${PROJECT_DIR}/${filePath}`;
+          const content = await sandbox.files.read(fullPath);
+          if (content) {
+            await ctx.runMutation(api.files.upsert, {
+              sessionId,
+              path: filePath,
+              content,
+            });
+            console.log(`[modify] Synced file: ${filePath}`);
+          }
+        } catch {
+          // File doesn't exist, skip
+        }
+      }
 
       return {
         success: true,
