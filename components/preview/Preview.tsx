@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useEffect, useCallback } from "react";
+import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import {
   RefreshCw,
   ExternalLink,
@@ -20,6 +20,7 @@ interface PreviewProps {
   onRetry?: () => void;
   isGenerating?: boolean;
   generationStage?: string;
+  sandboxInitStatus?: "idle" | "initializing" | "ready" | "error";
 }
 
 type ViewportSize = "desktop" | "tablet" | "mobile";
@@ -61,12 +62,25 @@ const defaultHtml = `
 </html>
 `;
 
-export function Preview({ previewUrl, code, onRetry, isGenerating, generationStage }: PreviewProps) {
+export function Preview({ previewUrl, code, onRetry, isGenerating, generationStage, sandboxInitStatus }: PreviewProps) {
   const [viewport, setViewport] = useState<ViewportSize>("desktop");
   const [refreshCount, setRefreshCount] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
   const [hasError, setHasError] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
+
+  // Track previous sandbox status to detect when initialization completes
+  const prevSandboxInitStatusRef = useRef(sandboxInitStatus);
+
+  // Force refresh when sandbox transitions from initializing to ready
+  useEffect(() => {
+    if (prevSandboxInitStatusRef.current === "initializing" && sandboxInitStatus === "ready") {
+      // Sandbox just finished initializing, force a refresh
+      setRefreshCount((c) => c + 1);
+      setIsLoading(true);
+    }
+    prevSandboxInitStatusRef.current = sandboxInitStatus;
+  }, [sandboxInitStatus]);
 
   // Determine if we're using external URL (E2B sandbox) or inline content (srcDoc)
   const isExternalUrl = Boolean(previewUrl);
@@ -222,20 +236,29 @@ export function Preview({ previewUrl, code, onRetry, isGenerating, generationSta
         >
           {isGenerating ? (
             <GenerationAnimation stage={generationStage} />
+          ) : sandboxInitStatus === "initializing" ? (
+            <div className="w-full h-full bg-zinc-900 rounded-lg flex flex-col items-center justify-center">
+              <div className="w-8 h-8 border-2 border-violet-500 border-t-transparent rounded-full animate-spin mb-4" />
+              <p className="text-zinc-400 text-sm">Restoring your project...</p>
+              <p className="text-zinc-500 text-xs mt-1">This may take a moment</p>
+            </div>
           ) : hasError ? (
             <PreviewError message={errorMessage} onRetry={handleRetry} />
+          ) : previewUrl ? (
+            <>
+              {isLoading && <PreviewLoading />}
+              <iframe
+                key={iframeKey}
+                src={previewUrl}
+                className={`w-full h-full bg-white rounded-lg ${isLoading ? "hidden" : ""}`}
+                sandbox="allow-scripts allow-forms allow-modals allow-popups allow-same-origin"
+                title="App Preview"
+                onLoad={handleIframeLoad}
+                onError={handleIframeError}
+              />
+            </>
           ) : isLoading ? (
             <PreviewLoading />
-          ) : previewUrl ? (
-            <iframe
-              key={iframeKey}
-              src={previewUrl}
-              className="w-full h-full bg-white rounded-lg"
-              sandbox="allow-scripts allow-forms allow-modals allow-popups allow-same-origin"
-              title="App Preview"
-              onLoad={handleIframeLoad}
-              onError={handleIframeError}
-            />
           ) : (
             <iframe
               key={iframeKey}

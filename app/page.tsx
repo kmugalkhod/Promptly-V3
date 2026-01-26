@@ -5,13 +5,30 @@ import { api } from "../convex/_generated/api";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { Sparkles, Plus, ChevronRight, MessageSquare, Clock } from "lucide-react";
+import { Sparkles, Plus, ChevronRight, MessageSquare, Clock, Trash2 } from "lucide-react";
+import { Id } from "@/convex/_generated/dataModel";
 
 export default function Home() {
   const router = useRouter();
   const sessions = useQuery(api.sessions.list);
   const createSession = useMutation(api.sessions.create);
+  const removeSession = useMutation(api.sessions.remove);
   const [isCreating, setIsCreating] = useState(false);
+  const [deleteSessionId, setDeleteSessionId] = useState<Id<"sessions"> | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  const handleDelete = async () => {
+    if (!deleteSessionId) return;
+    setIsDeleting(true);
+    try {
+      await removeSession({ id: deleteSessionId });
+      setDeleteSessionId(null);
+    } catch (error) {
+      console.error("Failed to delete session:", error);
+    } finally {
+      setIsDeleting(false);
+    }
+  };
 
   const handleCreateSession = async () => {
     setIsCreating(true);
@@ -108,7 +125,20 @@ export default function Home() {
                         </span>
                       </div>
                     </div>
-                    <ChevronRight className="w-5 h-5 text-zinc-600 group-hover:text-zinc-400 transition-colors" />
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setDeleteSessionId(session._id);
+                        }}
+                        className="p-2 hover:bg-red-900/50 rounded-lg transition-colors"
+                        title="Delete project"
+                      >
+                        <Trash2 className="w-4 h-4 text-zinc-500 hover:text-red-400" />
+                      </button>
+                      <ChevronRight className="w-5 h-5 text-zinc-600 group-hover:text-zinc-400 transition-colors" />
+                    </div>
                   </div>
                 </Link>
               ))}
@@ -116,6 +146,34 @@ export default function Home() {
           )}
         </div>
       </div>
+
+      {/* Delete Confirmation Dialog */}
+      {deleteSessionId && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 max-w-md mx-4">
+            <h3 className="text-lg font-semibold text-white mb-2">Delete Project?</h3>
+            <p className="text-zinc-400 mb-6">
+              This will permanently delete the project and all its files. This action cannot be undone.
+            </p>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setDeleteSessionId(null)}
+                disabled={isDeleting}
+                className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 rounded-lg text-white transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDelete}
+                disabled={isDeleting}
+                className="px-4 py-2 bg-red-600 hover:bg-red-500 disabled:opacity-50 rounded-lg text-white transition-colors"
+              >
+                {isDeleting ? "Deleting..." : "Delete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

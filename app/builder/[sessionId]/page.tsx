@@ -1,8 +1,8 @@
 "use client";
 
-import { use, useState } from "react";
+import { use, useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { useQuery } from "convex/react";
+import { useQuery, useAction } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { Id } from "@/convex/_generated/dataModel";
 import { Header } from "@/components/layout";
@@ -36,6 +36,38 @@ export default function BuilderPage({ params }: BuilderPageProps) {
   // Processing state lifted from ChatPanel for animation coordination
   const [isProcessing, setIsProcessing] = useState(false);
   const [generationStage, setGenerationStage] = useState<string | undefined>();
+
+  // Sandbox initialization state
+  const initializeSandbox = useAction(api.sandbox.initializeForSession);
+  const [sandboxStatus, setSandboxStatus] = useState<"idle" | "initializing" | "ready" | "error">("idle");
+  const [sandboxError, setSandboxError] = useState<string | null>(null);
+  const [localPreviewUrl, setLocalPreviewUrl] = useState<string | null>(null);
+  const initializationAttempted = useRef(false);
+
+  // Effect to initialize sandbox on mount (only for existing projects with files)
+  useEffect(() => {
+    if (files && files.length > 0 && sandboxStatus === "idle" && !initializationAttempted.current) {
+      initializationAttempted.current = true;
+      setSandboxStatus("initializing");
+      initializeSandbox({ sessionId: typedSessionId })
+        .then((result) => {
+          if (result.success) {
+            setSandboxStatus("ready");
+            // Store the previewUrl from the promise result to avoid race condition with query
+            if (result.previewUrl) {
+              setLocalPreviewUrl(result.previewUrl);
+            }
+          } else {
+            setSandboxStatus("error");
+            setSandboxError(result.error || "Failed to initialize sandbox");
+          }
+        })
+        .catch((err) => {
+          setSandboxStatus("error");
+          setSandboxError(err.message);
+        });
+    }
+  }, [files, sandboxStatus, initializeSandbox, typedSessionId]);
 
   // Compute effective selected path - if nothing selected but files exist, use first file
   const effectiveSelectedPath =
@@ -86,6 +118,19 @@ export default function BuilderPage({ params }: BuilderPageProps) {
         onBack={() => router.push("/")}
       />
 
+      {/* Sandbox Initialization Banner */}
+      {sandboxStatus === "initializing" && (
+        <div className="bg-violet-900/50 text-white text-sm py-2 px-4 text-center flex items-center justify-center gap-2">
+          <Loader2 className="w-4 h-4 animate-spin" />
+          Restoring your project...
+        </div>
+      )}
+      {sandboxStatus === "error" && (
+        <div className="bg-red-900/50 text-white text-sm py-2 px-4 text-center">
+          Failed to restore sandbox: {sandboxError}
+        </div>
+      )}
+
       {/* Main Content */}
       <div className="flex-1 flex overflow-hidden">
         {/* Left Panel - Chat */}
@@ -98,7 +143,7 @@ export default function BuilderPage({ params }: BuilderPageProps) {
 
         {/* Right Panel - Preview / Code (with FileExplorer in Code tab) */}
         <RightPanel
-          previewUrl={session.previewUrl}
+          previewUrl={localPreviewUrl || session.previewUrl}
           code={latestCode}
           fileName={latestFile?.path}
           selectedFile={selectedFile}
@@ -107,6 +152,7 @@ export default function BuilderPage({ params }: BuilderPageProps) {
           onSelectFile={setSelectedFilePath}
           isGenerating={isProcessing && (!files || files.length === 0)}
           generationStage={generationStage}
+          sandboxStatus={sandboxStatus}
         />
       </div>
     </div>
