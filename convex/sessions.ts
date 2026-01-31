@@ -44,14 +44,29 @@ export const update = mutation({
     status: v.optional(
       v.union(v.literal("new"), v.literal("active"), v.literal("archived"))
     ),
+    supabaseUrl: v.optional(v.string()),
+    supabaseAnonKey: v.optional(v.string()),
+    supabaseConnected: v.optional(v.boolean()),
+    supabaseAccessToken: v.optional(v.string()),
+    supabaseProjectRef: v.optional(v.string()),
+    supabaseRefreshToken: v.optional(v.string()),
+    supabaseTokenExpiry: v.optional(v.number()),
+    schemaStatus: v.optional(v.union(
+      v.literal("pending"),
+      v.literal("validating"),
+      v.literal("executing"),
+      v.literal("success"),
+      v.literal("error")
+    )),
+    schemaError: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const { id, ...updates } = args;
     // Filter out undefined values
-    const cleanUpdates: Record<string, string> = {};
+    const cleanUpdates: Record<string, string | boolean | number> = {};
     for (const [key, value] of Object.entries(updates)) {
       if (value !== undefined) {
-        cleanUpdates[key] = value;
+        cleanUpdates[key] = value as string | boolean | number;
       }
     }
     await ctx.db.patch(id, cleanUpdates);
@@ -106,6 +121,26 @@ export const getWithCounts = query({
       ...session,
       messageCount: messages.length,
       fileCount: files.length,
+    };
+  },
+});
+
+// Get Supabase connection status for a session
+export const getSupabaseStatus = query({
+  args: { id: v.id("sessions") },
+  handler: async (ctx, args) => {
+    const session = await ctx.db.get(args.id);
+    if (!session) return null;
+    return {
+      supabaseUrl: session.supabaseUrl ?? null,
+      supabaseAnonKey: session.supabaseAnonKey ?? null,
+      supabaseConnected: session.supabaseConnected ?? false,
+      supabaseAccessToken: session.supabaseAccessToken ?? null,
+      supabaseProjectRef: session.supabaseProjectRef ?? null,
+      supabaseRefreshToken: session.supabaseRefreshToken ?? null,
+      supabaseTokenExpiry: session.supabaseTokenExpiry ?? null,
+      schemaStatus: session.schemaStatus ?? null,
+      schemaError: session.schemaError ?? null,
     };
   },
 });

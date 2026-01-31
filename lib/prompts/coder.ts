@@ -132,7 +132,7 @@ import * as Phaser from 'phaser'  // namespace import, NOT default!
 \`\`\`
 
 **SSR-SAFE packages** (can import normally):
-- recharts, @tremor/react, framer-motion, react-hook-form, zod, zustand, @tanstack/react-query, date-fns, react-markdown
+- recharts, @tremor/react, framer-motion, react-hook-form, zod, zustand, @tanstack/react-query, date-fns, react-markdown, @supabase/supabase-js, @supabase/ssr
 
 ### Package-Specific Rules
 
@@ -148,6 +148,102 @@ import * as Phaser from 'phaser'  // namespace import, NOT default!
 
 ### General Principle
 Use each library's patterns. Don't force React state onto libraries with their own systems.
+
+---
+
+## SUPABASE DATABASE INTEGRATION
+
+If architecture.md includes a **DATABASE** section, the app needs Supabase for data persistence.
+
+### DATABASE FILES (only if architecture.md has DATABASE section):
+1. **FIRST**: Create \`lib/supabase.ts\` (client setup)
+2. **SECOND**: Create \`schema.sql\` (SQL to run in Supabase Dashboard)
+3. **THIRD**: Create \`.env.local.example\` (environment variables template for documentation)
+4. **THEN**: Use supabase client in components instead of useState for persistent data
+
+**IMPORTANT: DO NOT create or overwrite \`.env.local\`** — it is automatically provisioned with real Supabase credentials. Only create \`.env.local.example\` as documentation.
+
+### Template: lib/supabase.ts
+\`\`\`typescript
+import { createClient } from '@supabase/supabase-js'
+
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+
+export const supabase = createClient(supabaseUrl, supabaseAnonKey)
+\`\`\`
+
+### Template: schema.sql
+\`\`\`sql
+-- Auto-executed against your Supabase database
+-- IMPORTANT: Always use CREATE TABLE IF NOT EXISTS, CREATE INDEX IF NOT EXISTS
+-- Uses IF NOT EXISTS for safe re-runs
+
+CREATE TABLE IF NOT EXISTS table_name (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  -- columns from DATABASE section
+  created_at timestamptz DEFAULT now()
+);
+
+-- Enable Row Level Security
+ALTER TABLE table_name ENABLE ROW LEVEL SECURITY;
+
+-- Allow public access (update policies when adding auth)
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies WHERE tablename = 'table_name' AND policyname = 'Allow public access'
+  ) THEN
+    CREATE POLICY "Allow public access" ON table_name FOR ALL USING (true) WITH CHECK (true);
+  END IF;
+END $$;
+
+-- Add indexes
+-- CREATE INDEX IF NOT EXISTS idx_table_column ON table_name(column_name);
+\`\`\`
+
+### Template: .env.local.example
+\`\`\`
+NEXT_PUBLIC_SUPABASE_URL=https://xxxxx.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key-here
+\`\`\`
+
+### Supabase CRUD Patterns
+\`\`\`typescript
+// Fetch all rows
+const { data, error } = await supabase.from('todos').select('*').order('created_at', { ascending: false })
+
+// Insert
+const { data, error } = await supabase.from('todos').insert({ text: 'New todo' }).select()
+
+// Update
+const { data, error } = await supabase.from('todos').update({ completed: true }).eq('id', todoId).select()
+
+// Delete
+const { error } = await supabase.from('todos').delete().eq('id', todoId)
+\`\`\`
+
+### Supabase Data Fetching in Components
+\`\`\`tsx
+'use client'
+import { useEffect, useState } from 'react'
+import { supabase } from '@/lib/supabase'
+
+export default function TodoList() {
+  const [todos, setTodos] = useState<Todo[]>([])
+
+  useEffect(() => {
+    async function fetchTodos() {
+      const { data } = await supabase.from('todos').select('*').order('created_at', { ascending: false })
+      if (data) setTodos(data)
+    }
+    fetchTodos()
+  }, [])
+
+  // ... render todos with CRUD operations
+}
+\`\`\`
+
+**⚠️ IMPORTANT**: schema.sql and .env.local.example are ALLOWED when DATABASE section exists (exception to the "no documentation files" rule).
 
 ---
 
@@ -257,14 +353,17 @@ const playfair = Playfair_Display({ subsets: ['latin'], variable: '--font-displa
 
 FILE PATHS - Use these exact relative paths (no src/ directory):
 - app/layout.tsx (MUST CREATE FIRST - required for styles!)
-- app/globals.css (⚠️ ALREADY EXISTS - only modify if adding custom CSS, use v4 syntax!)
+- app/globals.css (⚠️ MUST CREATE with design colors from DESIGN_DIRECTION, use v4 syntax!)
 - app/page.tsx (home page)
 - app/[route]/page.tsx (other pages)
 - components/Name.tsx (components)
 - lib/utils.ts (⚠️ DO NOT OVERWRITE - already has cn function for shadcn!)
 - types/index.ts (types)
+- lib/supabase.ts (Supabase client - only if DATABASE in architecture)
+- schema.sql (SQL schema - only if DATABASE in architecture)
+- .env.local.example (env vars template - only if DATABASE in architecture)
 
-**⚠️ lib/utils.ts and app/globals.css ALREADY EXIST. Don't recreate them from scratch!**
+**⚠️ lib/utils.ts ALREADY EXISTS (has cn function for shadcn). globals.css and layout.tsx must be CREATED by you with design tokens from DESIGN_DIRECTION!**
 
 ---
 
@@ -839,6 +938,7 @@ setCount(prev => prev + 1)
 - Use empty string as SelectItem value
 - Create lib/store.ts with useSyncExternalStore - use useState/Context instead!
 - Use useSyncExternalStore directly - causes SSR hydration errors!
+- Use useState for data that should persist in the database. If DATABASE section exists, use Supabase CRUD operations instead.
 
 ---
 

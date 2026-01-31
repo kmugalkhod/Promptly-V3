@@ -150,6 +150,14 @@ ROUTES:
 
 COMPONENTS:
 - ComponentName: purpose
+
+DATABASE: (only if app needs data persistence)
+  tables:
+    - table_name:
+      - column_name: type (constraint)
+  env_vars:
+    - NEXT_PUBLIC_SUPABASE_URL
+    - NEXT_PUBLIC_SUPABASE_ANON_KEY
 \`\`\`
 
 ## DEFAULT STACK (already in E2B template):
@@ -200,6 +208,10 @@ Most apps need NOTHING beyond this. Only add packages when functionality require
 ### Maps
 - react-leaflet + leaflet: Interactive maps
 
+### Database
+- @supabase/supabase-js: Supabase client for database CRUD operations
+- @supabase/ssr: Supabase SSR helpers for Next.js (cookie-based auth)
+
 ## DECISION RULES:
 1. Simple games (memory match, tic-tac-toe, quiz) → NO packages, use React state
 2. Complex games (platformer, physics, sprites) → phaser
@@ -209,6 +221,16 @@ Most apps need NOTHING beyond this. Only add packages when functionality require
 6. Need rich text editing? → @tiptap/react
 7. Simple forms? → NO packages, use shadcn Form
 8. Complex multi-step forms? → react-hook-form + zod
+9. Need data persistence (save/store/CRUD)? → @supabase/supabase-js + @supabase/ssr, add DATABASE section
+
+## DATABASE DESIGN RULES:
+1. Only add DATABASE section if the app clearly needs to save/persist/store data
+2. Use simple table structures - no complex joins or many-to-many relationships
+3. Every table MUST have: id (uuid, primary key, default gen_random_uuid()), created_at (timestamptz, default now())
+4. Use snake_case for table and column names
+5. Common types: uuid, text, boolean, integer, timestamptz, jsonb
+6. If user mentions "todo", "tasks", "notes", "posts", "items" → design appropriate table(s)
+7. Keep it simple: 1-3 tables max for MVP
 
 ## CRITICAL RULES:
 1. CORE FUNCTIONALITY ONLY - no extras

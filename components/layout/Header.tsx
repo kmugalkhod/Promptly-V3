@@ -1,13 +1,15 @@
 "use client";
 
-import { Sparkles, ArrowLeft } from "lucide-react";
+import { Sparkles, ArrowLeft, Download, Settings } from "lucide-react";
 
 interface HeaderProps {
   onBack?: () => void;
   projectName?: string;
+  onSettings?: () => void;
+  onDownload?: () => void;
 }
 
-export function Header({ onBack, projectName }: HeaderProps) {
+export function Header({ onBack, projectName, onSettings, onDownload }: HeaderProps) {
   return (
     <header className="h-14 border-b border-zinc-800 bg-zinc-950 flex items-center justify-between px-4">
       {/* Left - Back & Logo */}
@@ -38,6 +40,26 @@ export function Header({ onBack, projectName }: HeaderProps) {
 
       {/* Right side actions */}
       <div className="flex items-center gap-3">
+        {onSettings && (
+          <button
+            onClick={onSettings}
+            className="flex items-center gap-1.5 text-sm text-zinc-400 hover:text-white transition-colors"
+            title="Project Settings"
+          >
+            <Settings className="w-4 h-4" />
+            <span className="hidden sm:inline">Settings</span>
+          </button>
+        )}
+        {onDownload && (
+          <button
+            onClick={onDownload}
+            className="flex items-center gap-1.5 text-sm text-zinc-400 hover:text-white transition-colors"
+            title="Download project as ZIP"
+          >
+            <Download className="w-4 h-4" />
+            <span className="hidden sm:inline">Download</span>
+          </button>
+        )}
         <button className="text-sm text-zinc-400 hover:text-white transition-colors">
           Share
         </button>

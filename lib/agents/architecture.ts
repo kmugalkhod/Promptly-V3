@@ -16,7 +16,7 @@ import { ARCHITECTURE_PROMPT } from "../prompts";
 import { type SandboxActions } from "./tools";
 import type { AgentResult, ToolContext, ToolCall } from "./types";
 
-const MODEL_NAME = "claude-haiku-4-5-20251001";
+const MODEL_NAME = "claude-sonnet-4-20250514";
 
 /**
  * Run the Architecture Agent to design app structure.
@@ -78,7 +78,7 @@ export async function runArchitectureAgent(
     const model = new ChatAnthropic({
       model: MODEL_NAME,
       temperature: 0,
-      maxTokens: 4096,
+      maxTokens: 8192,
     });
 
     // Create the agent
