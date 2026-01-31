@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation, useAction } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { Id } from "@/convex/_generated/dataModel";
@@ -12,6 +12,21 @@ interface ChatPanelProps {
   isProcessing: boolean;
   setIsProcessing: (value: boolean) => void;
   setGenerationStage: (stage: string | undefined) => void;
+  onOpenSettings?: () => void;
+}
+
+/**
+ * Check if message implies the app needs database/data persistence
+ */
+function needsDatabaseIntegration(message: string): boolean {
+  const keywords = [
+    "save", "store", "persist", "database", "backend", "crud",
+    "todo", "tasks", "posts", "blog", "users", "user data",
+    "inventory", "orders", "bookmark", "favorites", "notes",
+    "records", "entries", "items list", "track", "manage",
+  ];
+  const messageLower = message.toLowerCase();
+  return keywords.some((kw) => messageLower.includes(kw));
 }
 
 /**
@@ -41,14 +56,24 @@ export function ChatPanel({
   isProcessing,
   setIsProcessing,
   setGenerationStage,
+  onOpenSettings,
 }: ChatPanelProps) {
   const [error, setError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [supabaseWarning, setSupabaseWarning] = useState<string | null>(null);
 
   // Get messages and session data
   const messages = useQuery(api.messages.listBySession, { sessionId });
   const session = useQuery(api.sessions.get, { id: sessionId });
   const files = useQuery(api.files.listBySession, { sessionId });
+  const supabaseStatus = useQuery(api.sessions.getSupabaseStatus, { id: sessionId });
+
+  // Show schema error banner if schema execution failed
+  useEffect(() => {
+    if (supabaseStatus?.schemaStatus === "error" && supabaseStatus?.schemaError) {
+      setError(`Database setup failed: ${supabaseStatus.schemaError}`);
+    }
+  }, [supabaseStatus?.schemaStatus, supabaseStatus?.schemaError]);
 
   // Actions for app generation/modification
   const generate = useAction(api.generate.generate);
@@ -61,7 +86,13 @@ export function ChatPanel({
     setIsProcessing(true);
     setError(null);
     setStatusMessage(null);
+    setSupabaseWarning(null);
     setGenerationStage("Starting...");
+
+    // Check if this app needs a database but Supabase isn't connected
+    if (needsDatabaseIntegration(message) && !supabaseStatus?.supabaseConnected) {
+      setSupabaseWarning("This app may need a database. Connect Supabase in Settings > Integrations for data persistence.");
+    }
 
     try {
       // Save user message first
@@ -168,6 +199,21 @@ export function ChatPanel({
 
   return (
     <div className="w-[400px] shrink-0 border-r border-zinc-800 bg-zinc-950 flex flex-col h-full">
+      {/* Supabase Warning Banner */}
+      {supabaseWarning && (
+        <div className="p-3 bg-amber-900/50 border-b border-amber-800 text-amber-200 text-sm flex items-center justify-between">
+          <span>{supabaseWarning}</span>
+          {onOpenSettings && (
+            <button
+              onClick={onOpenSettings}
+              className="ml-3 px-3 py-1 bg-amber-700 hover:bg-amber-600 text-white text-xs rounded-lg shrink-0 transition-colors"
+            >
+              Connect Supabase
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Error Banner */}
       {error && (
         <div className="p-3 bg-red-900/50 border-b border-red-800 text-red-200 text-sm">

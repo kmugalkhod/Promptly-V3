@@ -23,6 +23,8 @@ import {
   type SandboxActions,
 } from "../lib/agents";
 import { deriveAppName, extractAppNameFromArchitecture } from "../lib/utils/app-name";
+import { extractDesignTokens, formatDesignTokensForCoder } from "../lib/utils/design-tokens";
+import { validateAndFixDesign } from "../lib/utils/design-validation";
 import { SandboxErrorType, type SandboxError } from "../lib/sandbox/types";
 
 // ============================================================================
@@ -55,6 +57,189 @@ function isBigChangeRequest(message: string): boolean {
   ];
   const messageLower = message.toLowerCase();
   return keywords.some((kw) => messageLower.includes(kw));
+}
+
+/**
+ * Check if message implies the app needs database/data persistence
+ */
+function needsDatabaseIntegration(message: string): boolean {
+  const keywords = [
+    "save", "store", "persist", "database", "backend", "crud",
+    "todo", "tasks", "posts", "blog", "users", "user data",
+    "inventory", "orders", "bookmark", "favorites", "notes",
+    "records", "entries", "items list", "track", "manage",
+  ];
+  const messageLower = message.toLowerCase();
+  return keywords.some((kw) => messageLower.includes(kw));
+}
+
+/**
+ * Refresh an OAuth access token if it is expired or near expiry.
+ * Calls Supabase OAuth token endpoint directly (no Next.js roundtrip).
+ * Returns the current or refreshed access token, or null if unavailable.
+ */
+async function refreshTokenIfNeeded(
+  ctx: { runMutation: typeof import("./_generated/server").action["prototype"]["runMutation"] },
+  sessionId: import("./_generated/dataModel").Id<"sessions">,
+  supabaseStatus: {
+    supabaseAccessToken: string | null;
+    supabaseRefreshToken: string | null;
+    supabaseTokenExpiry: number | null;
+  }
+): Promise<string | null> {
+  const token = supabaseStatus.supabaseAccessToken;
+  const expiry = supabaseStatus.supabaseTokenExpiry;
+  const refreshToken = supabaseStatus.supabaseRefreshToken;
+
+  if (!token) return null;
+
+  // If token not expired (with 5-minute buffer), use it
+  if (expiry && Date.now() < expiry - 5 * 60 * 1000) {
+    return token;
+  }
+
+  // Token expired or near expiry — try refresh
+  if (!refreshToken) return token;
+
+  const clientId = process.env.SUPABASE_OAUTH_CLIENT_ID;
+  const clientSecret = process.env.SUPABASE_OAUTH_CLIENT_SECRET;
+  if (!clientId || !clientSecret) return token;
+
+  try {
+    const body = new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+    });
+
+    const res = await fetch("https://api.supabase.com/v1/oauth/token", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`,
+      },
+      body: body.toString(),
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      await ctx.runMutation(api.sessions.update, {
+        id: sessionId,
+        supabaseAccessToken: data.access_token,
+        supabaseRefreshToken: data.refresh_token,
+        supabaseTokenExpiry: Date.now() + (data.expires_in * 1000),
+      });
+      console.log("[refreshTokenIfNeeded] Token refreshed successfully");
+      return data.access_token;
+    } else {
+      console.error("[refreshTokenIfNeeded] Refresh failed:", res.status);
+    }
+  } catch (e) {
+    console.error("[refreshTokenIfNeeded] Refresh error:", e);
+  }
+
+  // Refresh failed — return existing token (may still work)
+  return token;
+}
+
+/**
+ * Execute schema.sql against Supabase with validation and retry logic.
+ * Updates session schemaStatus throughout the process.
+ */
+async function executeSchemaWithRetry(
+  ctx: { runMutation: typeof import("./_generated/server").action["prototype"]["runMutation"] },
+  sessionId: import("./_generated/dataModel").Id<"sessions">,
+  schemaContent: string,
+  projectRef: string,
+  token: string,
+): Promise<{ success: boolean; error?: string }> {
+  const apiUrl = `https://api.supabase.com/v1/projects/${projectRef}/database/query`;
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    "Content-Type": "application/json",
+  };
+
+  // Step 1: Validate with dry-run (read_only: true)
+  await ctx.runMutation(api.sessions.update, {
+    id: sessionId,
+    schemaStatus: "validating" as const,
+  });
+
+  try {
+    const validateRes = await fetch(apiUrl, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ query: schemaContent, read_only: true }),
+    });
+
+    if (!validateRes.ok) {
+      const errText = await validateRes.text();
+      // DDL statements (CREATE TABLE, etc.) cannot run in read-only mode — this is expected, skip to execution
+      if (errText.includes("read-only transaction") || errText.includes("25006")) {
+        console.warn("[executeSchema] Dry-run validation skipped: DDL not supported in read-only mode");
+      } else {
+        // Genuine SQL syntax error — fail early
+        await ctx.runMutation(api.sessions.update, {
+          id: sessionId,
+          schemaStatus: "error" as const,
+          schemaError: `Validation failed: ${errText}`,
+        });
+        return { success: false, error: `SQL validation failed: ${errText}` };
+      }
+    }
+  } catch (e) {
+    // Network error or other issue — skip validation, proceed to execution
+    console.warn("[executeSchema] Dry-run validation skipped:", e);
+  }
+
+  // Step 2: Execute with retry (max 2 attempts)
+  await ctx.runMutation(api.sessions.update, {
+    id: sessionId,
+    schemaStatus: "executing" as const,
+  });
+
+  const MAX_ATTEMPTS = 2;
+  let lastError = "";
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const res = await fetch(apiUrl, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ query: schemaContent, read_only: false }),
+      });
+
+      if (res.ok) {
+        await ctx.runMutation(api.sessions.update, {
+          id: sessionId,
+          schemaStatus: "success" as const,
+          schemaError: undefined,
+        });
+        console.log(`[executeSchema] Schema executed successfully (attempt ${attempt})`);
+        return { success: true };
+      }
+
+      lastError = await res.text();
+      console.error(`[executeSchema] Attempt ${attempt} failed: ${lastError}`);
+
+      if (attempt < MAX_ATTEMPTS) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+    } catch (e) {
+      lastError = e instanceof Error ? e.message : String(e);
+      console.error(`[executeSchema] Attempt ${attempt} error: ${lastError}`);
+
+      if (attempt < MAX_ATTEMPTS) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+    }
+  }
+
+  await ctx.runMutation(api.sessions.update, {
+    id: sessionId,
+    schemaStatus: "error" as const,
+    schemaError: lastError,
+  });
+  return { success: false, error: lastError };
 }
 
 /** E2B template with Next.js 16 + Tailwind v4 + shadcn/ui */
@@ -266,8 +451,10 @@ async function connectOrRecreateSandbox(
     timeoutMs: SANDBOX_CONFIG.TIMEOUT_SECONDS * 1000,
   });
 
-  // Clean up default files
+  // Clean up default template files so coder generates fresh ones
   await sandbox.commands.run(`rm -f ${PROJECT_DIR}/app/page.tsx`);
+  await sandbox.commands.run(`rm -f ${PROJECT_DIR}/app/layout.tsx`);
+  await sandbox.commands.run(`rm -f ${PROJECT_DIR}/app/globals.css`);
   await sandbox.commands.run(`rm -f ${PROJECT_DIR}/components/ui/resizable.tsx`);
 
   const sandboxId = sandbox.sandboxId;
@@ -346,8 +533,10 @@ export const generate = action({
         timeoutMs: SANDBOX_CONFIG.TIMEOUT_SECONDS * 1000,
       });
 
-      // Clean up default files
+      // Clean up default template files so coder generates fresh ones
       await sandbox.commands.run(`rm -f ${PROJECT_DIR}/app/page.tsx`);
+      await sandbox.commands.run(`rm -f ${PROJECT_DIR}/app/layout.tsx`);
+      await sandbox.commands.run(`rm -f ${PROJECT_DIR}/app/globals.css`);
       await sandbox.commands.run(`rm -f ${PROJECT_DIR}/components/ui/resizable.tsx`);
 
       const sandboxId = sandbox.sandboxId;
@@ -453,9 +642,21 @@ export const generate = action({
         },
       };
 
-      // 4. Run Architecture Agent
+      // 4. Check Supabase status and build augmented prompt
+      const supabaseStatus = await ctx.runQuery(api.sessions.getSupabaseStatus, { id: sessionId });
+      const hasSupabase = supabaseStatus?.supabaseConnected ?? false;
+      const needsDb = needsDatabaseIntegration(prompt);
+
+      let architecturePrompt = prompt;
+      if (needsDb && hasSupabase) {
+        architecturePrompt += `\n\n[SYSTEM: User has Supabase connected (${supabaseStatus?.supabaseUrl}). This app needs data persistence. Include a DATABASE section in the architecture with table definitions. Add @supabase/supabase-js and @supabase/ssr to PACKAGES.]`;
+      } else if (needsDb && !hasSupabase) {
+        architecturePrompt += `\n\n[SYSTEM: This app may benefit from data persistence, but user has not connected Supabase yet. Generate frontend-only architecture using useState for now.]`;
+      }
+
+      // 5. Run Architecture Agent
       console.log("[generate] Running Architecture Agent...");
-      const archResult = await runArchitectureAgent(prompt, toolContext, sandboxActions);
+      const archResult = await runArchitectureAgent(architecturePrompt, toolContext, sandboxActions);
 
       if (archResult.error) {
         console.error(`[generate] Architecture failed: ${archResult.error}`);
@@ -482,13 +683,31 @@ export const generate = action({
         appName,
       });
 
-      // 5. Run Coder Agent
+      // 5. Extract design tokens for coder
+      const designTokens = extractDesignTokens(architecture);
+      let designTokensBlock = "";
+      if (designTokens) {
+        designTokensBlock = formatDesignTokensForCoder(designTokens);
+        console.log(`[generate] Extracted design tokens: ${designTokens.aesthetic}, ${designTokens.typography.pairing}`);
+      } else {
+        console.log("[generate] Could not extract design tokens from architecture");
+      }
+
+      // 5b. Write .env.local with Supabase credentials if connected
+      if (hasSupabase && supabaseStatus?.supabaseUrl && supabaseStatus?.supabaseAnonKey) {
+        const envContent = `NEXT_PUBLIC_SUPABASE_URL=${supabaseStatus.supabaseUrl}\nNEXT_PUBLIC_SUPABASE_ANON_KEY=${supabaseStatus.supabaseAnonKey}\n`;
+        await sandbox.files.write(`${PROJECT_DIR}/.env.local`, envContent);
+        console.log('[generate] Wrote .env.local with Supabase credentials');
+      }
+
+      // 6. Run Coder Agent
       console.log("[generate] Running Coder Agent...");
       const coderResult = await runCoderAgent(
         architecture,
         previewUrl,
         toolContext,
-        sandboxActions
+        sandboxActions,
+        designTokensBlock
       );
 
       if (coderResult.error) {
@@ -512,7 +731,53 @@ export const generate = action({
       console.log(`[generate] Created ${coderResult.filesChanged.length} files`);
       console.log(`[generate] Files: ${coderResult.filesChanged.join(", ")}`);
 
-      // 6. Ensure all key files are saved to Convex (including template files that might have been used)
+      // 7a. Auto-execute schema.sql if Supabase Management API is available
+      let schemaResult: { success: boolean; error?: string } | null = null;
+      if (hasSupabase && supabaseStatus?.supabaseAccessToken && supabaseStatus?.supabaseProjectRef) {
+        const schemaContent = await sandboxActions.readFile("schema.sql");
+        if (schemaContent?.trim()) {
+          console.log("[generate] Executing schema.sql via Management API...");
+          const token = await refreshTokenIfNeeded(ctx, sessionId, supabaseStatus);
+          if (token) {
+            schemaResult = await executeSchemaWithRetry(
+              ctx,
+              sessionId,
+              schemaContent,
+              supabaseStatus.supabaseProjectRef,
+              token,
+            );
+          }
+        }
+      }
+
+      // 7b. Post-generation design validation
+      console.log("[generate] Validating design tokens...");
+      const validationResult = await validateAndFixDesign(
+        designTokens,
+        appName,
+        sandboxActions.readFile,
+        sandboxActions.writeFile
+      );
+      if (validationResult.filesFixed.length > 0) {
+        console.log(`[generate] Fixed design files: ${validationResult.filesFixed.join(", ")}`);
+      } else {
+        console.log("[generate] Design validation passed");
+      }
+
+      // 7c. Send schema execution result as chat message
+      if (schemaResult) {
+        const schemaMessage = schemaResult.success
+          ? "✅ Database tables created successfully."
+          : `⚠️ Schema execution failed: ${schemaResult.error}. You may need to run schema.sql manually in the Supabase SQL Editor.`;
+
+        await ctx.runMutation(api.messages.create, {
+          sessionId,
+          role: "assistant",
+          content: schemaMessage,
+        });
+      }
+
+      // 8. Ensure all key files are saved to Convex (including template files that might have been used)
       console.log("[generate] Syncing all key files to Convex...");
       const keyFiles = [
         "app/globals.css",
@@ -724,6 +989,16 @@ export const modify = action({
         },
       };
 
+      // 6b. Ensure .env.local has Supabase credentials
+      const supabaseStatus = await ctx.runQuery(api.sessions.getSupabaseStatus, { id: sessionId });
+      if (supabaseStatus?.supabaseConnected && supabaseStatus?.supabaseUrl && supabaseStatus?.supabaseAnonKey) {
+        await sandbox.files.write(
+          `${PROJECT_DIR}/.env.local`,
+          `NEXT_PUBLIC_SUPABASE_URL=${supabaseStatus.supabaseUrl}\nNEXT_PUBLIC_SUPABASE_ANON_KEY=${supabaseStatus.supabaseAnonKey}\n`
+        );
+        console.log('[modify] Wrote .env.local with Supabase credentials');
+      }
+
       // 6. Route based on request type (from reference code)
 
       // If it's a new project request and no files exist, tell user to use generate
@@ -742,7 +1017,13 @@ export const modify = action({
 
       // 7. Run Chat Agent
       console.log("[modify] Running Chat Agent...");
-      const chatResult = await runChatAgent(message, toolContext, sandboxActions);
+      const chatResult = await runChatAgent(
+        message,
+        toolContext,
+        sandboxActions,
+        {},
+        session.architecture ?? undefined
+      );
 
       if (chatResult.error) {
         console.error(`[modify] Chat agent error: ${chatResult.error}`);
@@ -762,6 +1043,38 @@ export const modify = action({
       }
 
       console.log(`[modify] Modified ${chatResult.filesChanged.length} files`);
+
+      // 7b. Auto-execute schema.sql if it was changed and Management API is available
+      if (chatResult.filesChanged.includes("schema.sql") && supabaseStatus?.supabaseAccessToken && supabaseStatus?.supabaseProjectRef) {
+        const schemaContent = await sandboxActions.readFile("schema.sql");
+        if (schemaContent?.trim()) {
+          console.log("[modify] Executing updated schema.sql via Management API...");
+          const token = await refreshTokenIfNeeded(ctx, sessionId, supabaseStatus);
+          if (token) {
+            const schemaResult = await executeSchemaWithRetry(
+              ctx,
+              sessionId,
+              schemaContent,
+              supabaseStatus.supabaseProjectRef,
+              token,
+            );
+
+            if (schemaResult.success) {
+              await ctx.runMutation(api.messages.create, {
+                sessionId,
+                role: "assistant",
+                content: "✅ Database schema updated successfully.",
+              });
+            } else {
+              await ctx.runMutation(api.messages.create, {
+                sessionId,
+                role: "assistant",
+                content: `⚠️ Schema update failed: ${schemaResult.error}. You may need to run schema.sql manually.`,
+              });
+            }
+          }
+        }
+      }
 
       // 8. Ensure all key files are saved to Convex
       console.log("[modify] Syncing key files to Convex...");

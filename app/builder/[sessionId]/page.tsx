@@ -8,6 +8,8 @@ import { Id } from "@/convex/_generated/dataModel";
 import { Header } from "@/components/layout";
 import { ChatPanel } from "@/components/chat";
 import { RightPanel } from "@/components/preview";
+import { DownloadModal } from "@/components/modals/DownloadModal";
+import { SettingsModal } from "@/components/modals/SettingsModal";
 import { Loader2 } from "lucide-react";
 
 interface BuilderPageProps {
@@ -43,6 +45,12 @@ export default function BuilderPage({ params }: BuilderPageProps) {
   const [sandboxError, setSandboxError] = useState<string | null>(null);
   const [localPreviewUrl, setLocalPreviewUrl] = useState<string | null>(null);
   const initializationAttempted = useRef(false);
+
+  // Download modal state
+  const [isDownloadModalOpen, setIsDownloadModalOpen] = useState(false);
+
+  // Settings modal state
+  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
 
   // Effect to initialize sandbox on mount (only for existing projects with files)
   useEffect(() => {
@@ -116,6 +124,28 @@ export default function BuilderPage({ params }: BuilderPageProps) {
       <Header
         projectName={session.appName}
         onBack={() => router.push("/")}
+        onSettings={() => setIsSettingsModalOpen(true)}
+        onDownload={() => setIsDownloadModalOpen(true)}
+      />
+
+      {/* Download Modal */}
+      <DownloadModal
+        isOpen={isDownloadModalOpen}
+        onClose={() => setIsDownloadModalOpen(false)}
+        files={(files || []).map((f) => ({ path: f.path, content: f.content }))}
+        appName={session.appName || "project"}
+        supabaseCredentials={
+          session.supabaseUrl && session.supabaseAnonKey
+            ? { url: session.supabaseUrl, anonKey: session.supabaseAnonKey }
+            : undefined
+        }
+      />
+
+      {/* Settings Modal */}
+      <SettingsModal
+        isOpen={isSettingsModalOpen}
+        onClose={() => setIsSettingsModalOpen(false)}
+        sessionId={typedSessionId}
       />
 
       {/* Sandbox Initialization Banner */}
@@ -139,6 +169,7 @@ export default function BuilderPage({ params }: BuilderPageProps) {
           isProcessing={isProcessing}
           setIsProcessing={setIsProcessing}
           setGenerationStage={setGenerationStage}
+          onOpenSettings={() => setIsSettingsModalOpen(true)}
         />
 
         {/* Right Panel - Preview / Code (with FileExplorer in Code tab) */}

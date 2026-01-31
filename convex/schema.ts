@@ -7,6 +7,21 @@ export default defineSchema({
     appName: v.optional(v.string()), // kebab-case app name
     previewUrl: v.optional(v.string()), // E2B sandbox URL
     sandboxId: v.optional(v.string()), // E2B sandbox ID for reconnection
+    supabaseUrl: v.optional(v.string()), // e.g., "https://xxxxx.supabase.co"
+    supabaseAnonKey: v.optional(v.string()), // Supabase anon/public key
+    supabaseConnected: v.optional(v.boolean()), // Connection status flag
+    supabaseAccessToken: v.optional(v.string()), // Management API token
+    supabaseProjectRef: v.optional(v.string()), // e.g. "abc123xyz"
+    supabaseRefreshToken: v.optional(v.string()), // OAuth refresh token
+    supabaseTokenExpiry: v.optional(v.number()), // Token expiry timestamp (ms)
+    schemaStatus: v.optional(v.union(
+      v.literal("pending"),
+      v.literal("validating"),
+      v.literal("executing"),
+      v.literal("success"),
+      v.literal("error")
+    )),
+    schemaError: v.optional(v.string()),
     architecture: v.optional(v.string()), // architecture.md content
     status: v.union(
       v.literal("new"),

@@ -51,6 +51,9 @@ export const ALLOWED_PACKAGES = new Set([
   // Types (auto-added when needed)
   "@types/three",
   "@types/leaflet",
+  // Database
+  "@supabase/supabase-js",
+  "@supabase/ssr",
 ]);
 
 /**

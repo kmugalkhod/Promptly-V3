@@ -15,7 +15,7 @@ import { CODER_PROMPT } from "../prompts";
 import { validatePackageName, type SandboxActions } from "./tools";
 import type { AgentResult, ToolContext, ToolCall } from "./types";
 
-const MODEL_NAME = "claude-haiku-4-5-20251001";
+const MODEL_NAME = "claude-sonnet-4-20250514";
 
 /**
  * Run the Coder Agent to implement architecture.
@@ -30,7 +30,8 @@ export async function runCoderAgent(
   architecture: string,
   previewUrl: string,
   context: ToolContext,
-  sandboxActions: SandboxActions
+  sandboxActions: SandboxActions,
+  designTokensBlock?: string
 ): Promise<AgentResult> {
   const toolCalls: ToolCall[] = [];
   const filesChanged: string[] = [];
@@ -233,7 +234,7 @@ export async function runCoderAgent(
     const model = new ChatAnthropic({
       model: MODEL_NAME,
       temperature: 0,
-      maxTokens: 8192,
+      maxTokens: 16384,
     });
 
     // Create the agent using the new API
@@ -244,11 +245,9 @@ export async function runCoderAgent(
     });
 
     // Build the input message with explicit design extraction instructions
-    const userMessage = `Implement based on architecture:
-
-${architecture}
-
-## ⚠️ CRITICAL: EXTRACT DESIGN TOKENS FIRST
+    const designSection = designTokensBlock
+      ? `\n\n${designTokensBlock}\n`
+      : `\n\n## ⚠️ CRITICAL: EXTRACT DESIGN TOKENS FIRST
 
 Before writing ANY code, find DESIGN_DIRECTION in architecture above and extract:
 1. aesthetic → determines overall style
@@ -258,26 +257,30 @@ Before writing ANY code, find DESIGN_DIRECTION in architecture above and extract
 5. motion_level → transition classes
 6. spacing_scale → gap/padding choices
 7. shadow_system → shadow classes
-8. radius_system → rounded classes
+8. radius_system → rounded classes\n`;
 
+    const userMessage = `Implement based on architecture:
+
+${architecture}
+${designSection}
 ## FILE ORDER (MANDATORY):
-1. FIRST: app/globals.css with ACTUAL hex values from color_scheme
-2. SECOND: app/layout.tsx with fonts from typography.pairing
+1. FIRST: CREATE app/globals.css with ACTUAL hex values from color_scheme (file does NOT exist yet)
+2. SECOND: CREATE app/layout.tsx with fonts from typography.pairing (file does NOT exist yet)
 3. THEN: components and pages using CSS variables
 
 ## VALIDATION:
 - If you use "bg-white" or "text-gray-500" → WRONG, use CSS variables
 - If globals.css has "#______" placeholders → WRONG, fill in actual hex values
-- If layout.tsx uses Inter font when pairing specifies different → WRONG
+- If layout.tsx uses Geist or Inter font when pairing specifies different → WRONG
 
 The Next.js app is ALREADY SETUP in E2B sandbox.
 Check if PACKAGES section exists - install FIRST if needed.
 FILE PATHS:
-- app/globals.css (UPDATE with design colors)
-- app/layout.tsx (MUST CREATE with fonts!)
+- app/globals.css (CREATE with design colors - does not exist yet!)
+- app/layout.tsx (CREATE with custom fonts - does not exist yet!)
 - app/page.tsx
 - components/Name.tsx
-- lib/utils.ts (DO NOT OVERWRITE)
+- lib/utils.ts (DO NOT OVERWRITE - already has cn function)
 - types/index.ts
 
 Preview is live at: ${previewUrl}`;

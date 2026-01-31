@@ -13,6 +13,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { validatePackageName, type SandboxActions } from "./tools";
 import type { AgentResult, ToolContext, ToolCall } from "./types";
+import { extractDesignTokens } from "../utils/design-tokens";
 
 // Use Sonnet for better quality edits (Haiku loses code too often)
 const MODEL_NAME = "claude-sonnet-4-20250514";
@@ -24,6 +25,56 @@ const MAX_ITERATIONS = 15;
 export interface ChatAgentConfig {
   /** Maximum iterations for agentic loop */
   maxIterations?: number;
+}
+
+/**
+ * Protected config files that the chat agent must NEVER modify.
+ * These are critical build/tooling files — modifying them breaks the sandbox.
+ */
+const BLOCKED_FILES = new Set([
+  "tailwind.config.ts",
+  "tailwind.config.js",
+  "postcss.config.js",
+  "postcss.config.mjs",
+  "next.config.js",
+  "next.config.mjs",
+  "next.config.ts",
+  "package.json",
+  "package-lock.json",
+  "tsconfig.json",
+  "lib/utils.ts",
+]);
+
+/**
+ * Validate globals.css content before writing.
+ * Returns null if valid, or an error message if invalid.
+ */
+function validateGlobalsCss(content: string): string | null {
+  const lines = content.split("\n");
+  // Find first non-empty, non-comment line
+  const firstContentLine = lines.find(
+    (line) => line.trim() && !line.trim().startsWith("/*") && !line.trim().startsWith("*") && !line.trim().startsWith("//")
+  );
+
+  if (!firstContentLine || !firstContentLine.includes('@import "tailwindcss"')) {
+    return `ERROR: globals.css MUST start with '@import "tailwindcss"' as the first non-comment line. Your file starts with: "${firstContentLine?.trim() ?? "(empty)"}". Rewrite the file with '@import "tailwindcss"' as the first line.`;
+  }
+
+  // Check for Tailwind v3 syntax
+  if (
+    content.includes("@tailwind base") ||
+    content.includes("@tailwind components") ||
+    content.includes("@tailwind utilities")
+  ) {
+    return `ERROR: globals.css contains Tailwind v3 syntax (@tailwind base/components/utilities). This project uses Tailwind v4 which only needs '@import "tailwindcss"'. Remove all @tailwind directives and use '@import "tailwindcss"' instead.`;
+  }
+
+  // Check for @import url() font imports
+  if (content.includes("@import url(")) {
+    return `ERROR: globals.css contains '@import url(...)' for font loading. This breaks Tailwind v4 builds. Use 'next/font/google' in layout.tsx instead of CSS @import url() for fonts. Remove the @import url() line and load fonts via next/font/google.`;
+  }
+
+  return null;
 }
 
 /**
@@ -62,11 +113,105 @@ When you write a file, you MUST include ALL existing code that wasn't meant to b
 - ❌ Write partial files with "// ... rest of code"
 - ❌ Create extra files user didn't ask for
 
+## Protected Files — NEVER Modify These
+
+The following files are locked and CANNOT be written to. Any attempt will be rejected:
+- tailwind.config.ts / .js — Tailwind v4 uses CSS-based config, not JS config
+- postcss.config.js / .mjs — build tooling, must not be touched
+- next.config.js / .mjs / .ts — Next.js build config
+- package.json / package-lock.json — use install_packages tool instead
+- tsconfig.json — TypeScript config
+- lib/utils.ts — shared utility (cn function)
+
+If the user asks to modify these, explain WHY you can't and suggest the correct alternative.
+
+## Tailwind v4 CSS Rules (CRITICAL)
+
+This project uses **Tailwind CSS v4**, which is very different from v3:
+
+1. **globals.css MUST start with**: \`@import "tailwindcss";\` — this is the ONLY import needed
+2. **NEVER use v3 syntax**: No \`@tailwind base\`, \`@tailwind components\`, \`@tailwind utilities\`
+3. **NEVER use \`@import url(...)\`** for fonts in CSS — this breaks the build
+4. **Load fonts via \`next/font/google\`** in layout.tsx, NOT via CSS imports
+5. **Custom variants**: Use \`@custom-variant dark (&:where(.dark, .dark *));\` for dark mode
+
+### Correct globals.css structure:
+\`\`\`css
+@import "tailwindcss";
+
+:root {
+  --font-display: 'Font Name', serif;
+  --font-body: 'Font Name', sans-serif;
+  --color-primary: #hexvalue;
+  --color-background: #hexvalue;
+  --color-text: #hexvalue;
+  /* ... more CSS variables ... */
+}
+
+.dark {
+  --color-primary: #hexvalue;
+  --color-background: #hexvalue;
+  --color-text: #hexvalue;
+}
+
+@custom-variant dark (&:where(.dark, .dark *));
+\`\`\`
+
+## Font Rules
+
+- **ALWAYS** load fonts via \`next/font/google\` in app/layout.tsx
+- **NEVER** use \`@import url('https://fonts.googleapis.com/...')\` in CSS
+- Font CSS variables (--font-display, --font-body) are set in globals.css :root
+- Use \`font-display\` and \`font-body\` classes, or \`font-[family-name:var(--font-display)]\`
+
+## Design System — CSS Variables
+
+This app uses CSS custom properties for theming. The key variables are:
+
+- \`--color-primary\` — brand/accent color for buttons, links, highlights
+- \`--color-accent\` — secondary accent color
+- \`--color-background\` — page background
+- \`--color-surface\` — card/section backgrounds
+- \`--color-text\` — main text color
+- \`--color-muted\` — secondary/subtle text
+- \`--font-display\` — heading font family
+- \`--font-body\` — body text font family
+
+### Using CSS variables in Tailwind classes:
+\`\`\`
+bg-[var(--color-background)]    — page background
+bg-[var(--color-surface)]       — card background
+text-[var(--color-text)]        — main text
+text-[var(--color-muted)]       — subtle text
+text-[var(--color-primary)]     — accent text
+bg-[var(--color-primary)]       — accent background
+border-[var(--color-primary)]   — accent border
+\`\`\`
+
+## Debugging Visual Issues
+
+When user says text is "not visible", "can't see", "invisible", or colors are wrong:
+
+1. **FIRST read globals.css** — check what CSS variables are defined
+2. **Check the component** — is it using hardcoded colors that clash with the background?
+3. **Fix using CSS variables** — replace hardcoded colors with \`text-[var(--color-text)]\`, \`bg-[var(--color-background)]\`, etc.
+4. **Common cause**: Component uses \`text-white\` on a white background, or \`text-black\` on a dark background. Fix by using the CSS variable instead.
+
+{ARCHITECTURE_CONTEXT}
+
 ## Project Stack
 
 - Next.js 14+ (App Router)
 - TypeScript
-- Tailwind CSS
+- Tailwind CSS v4
+- shadcn/ui components (import from @/components/ui/*)
+
+## Common Patterns
+
+- Add \`'use client'\` at top of any component using hooks (useState, useEffect, etc.) or event handlers
+- Import shadcn/ui: \`import { Button } from "@/components/ui/button"\`
+- Import cn utility: \`import { cn } from "@/lib/utils"\`
+- Hydration: never put interactive elements (<button>, <a>) inside each other
 
 ## Current Project Files
 `;
@@ -100,7 +245,8 @@ export async function runChatAgent(
   message: string,
   context: ToolContext,
   sandboxActions: SandboxActions,
-  config: ChatAgentConfig = {}
+  config: ChatAgentConfig = {},
+  architecture?: string
 ): Promise<AgentResult> {
   const { maxIterations = MAX_ITERATIONS } = config;
 
@@ -112,7 +258,36 @@ export async function runChatAgent(
 
     // Build system prompt with file context
     const fileContext = buildFileContext(context.files);
-    const systemPrompt = SYSTEM_PROMPT + fileContext;
+
+    // Build architecture context section
+    let architectureContext = "";
+    if (architecture) {
+      const tokens = extractDesignTokens(architecture);
+      if (tokens) {
+        const colorEntries = Object.entries(tokens.colors.light)
+          .map(([key, val]) => `  --color-${key}: ${val}`)
+          .join("\n");
+        const darkColorEntries = Object.entries(tokens.colors.dark)
+          .map(([key, val]) => `  --color-${key}: ${val}`)
+          .join("\n");
+        architectureContext = `
+## Current App Design Tokens (from architecture)
+
+**Aesthetic**: ${tokens.aesthetic}
+**Display font**: ${tokens.typography.displayFont}
+**Body font**: ${tokens.typography.bodyFont}
+
+**Light mode colors**:
+${colorEntries}
+
+**Dark mode colors**:
+${darkColorEntries}
+
+Use these exact values when fixing color/visibility issues. Reference them via CSS variables (e.g., \`text-[var(--color-text)]\`).`;
+      }
+    }
+
+    const systemPrompt = SYSTEM_PROMPT.replace("{ARCHITECTURE_CONTEXT}", architectureContext) + fileContext;
 
     // Define simple tools
     const tools: Anthropic.Tool[] = [
@@ -286,6 +461,19 @@ async function executeToolCall(
         return "ERROR: write_file requires content";
       }
 
+      // Block protected config files
+      if (BLOCKED_FILES.has(path)) {
+        return `ERROR: Cannot modify '${path}' — this is a protected config file. Do NOT attempt to edit build configuration files (tailwind.config, next.config, package.json, etc.).`;
+      }
+
+      // Validate globals.css before writing
+      if (path === "app/globals.css") {
+        const validationError = validateGlobalsCss(content);
+        if (validationError) {
+          return validationError;
+        }
+      }
+
       // Block documentation files
       if (/\.(md|txt)$/i.test(path) || /readme|changelog|guide/i.test(path)) {
         return "ERROR: Cannot create documentation files. Modify actual code files instead.";
@@ -354,6 +542,11 @@ async function executeToolCall(
 
       if (!path || typeof path !== "string") {
         return "ERROR: delete_file requires a valid path";
+      }
+
+      // Block protected config files
+      if (BLOCKED_FILES.has(path)) {
+        return `ERROR: Cannot delete '${path}' — this is a protected config file.`;
       }
 
       context.files.delete(path);
@@ -429,6 +622,12 @@ export function shouldRecommendArchitecture(message: string): boolean {
     "add route",
     "restructure",
     "rebuild",
+    "save data",
+    "store data",
+    "persist",
+    "persistence",
+    "crud",
+    "supabase",
   ];
 
   const messageLower = message.toLowerCase();
