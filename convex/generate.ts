@@ -25,6 +25,8 @@ import {
 import { deriveAppName, extractAppNameFromArchitecture } from "../lib/utils/app-name";
 import { extractDesignTokens, formatDesignTokensForCoder } from "../lib/utils/design-tokens";
 import { validateAndFixDesign } from "../lib/utils/design-validation";
+import { validateGeneratedCode } from "../lib/utils/code-validation";
+import { extractPackagesFromArchitecture } from "../lib/utils/package-extraction";
 import { SandboxErrorType, type SandboxError } from "../lib/sandbox/types";
 
 // ============================================================================
@@ -700,6 +702,24 @@ export const generate = action({
         console.log('[generate] Wrote .env.local with Supabase credentials');
       }
 
+      // 5c. Pre-install architecture packages before coder starts
+      try {
+        const packagesToInstall = extractPackagesFromArchitecture(architecture);
+        if (packagesToInstall.length > 0) {
+          console.log(`[generate] Pre-installing packages: ${packagesToInstall.join(", ")}`);
+          let installResult = await sandbox.commands.run(
+            `npm install ${packagesToInstall.join(" ")}`, { cwd: PROJECT_DIR }
+          );
+          if (installResult.exitCode !== 0 && installResult.stderr.includes("ERESOLVE")) {
+            installResult = await sandbox.commands.run(
+              `npm install --legacy-peer-deps ${packagesToInstall.join(" ")}`, { cwd: PROJECT_DIR }
+            );
+          }
+        }
+      } catch (error) {
+        console.warn(`[generate] Pre-install error (non-fatal): ${error}`);
+      }
+
       // 6. Run Coder Agent
       console.log("[generate] Running Coder Agent...");
       const coderResult = await runCoderAgent(
@@ -730,6 +750,17 @@ export const generate = action({
 
       console.log(`[generate] Created ${coderResult.filesChanged.length} files`);
       console.log(`[generate] Files: ${coderResult.filesChanged.join(", ")}`);
+
+      // 6b. Run npm install after coder to catch any missing packages
+      console.log("[generate] Running npm install...");
+      try {
+        let postInstallResult = await sandbox.commands.run("npm install", { cwd: PROJECT_DIR });
+        if (postInstallResult.exitCode !== 0 && postInstallResult.stderr.includes("ERESOLVE")) {
+          postInstallResult = await sandbox.commands.run("npm install --legacy-peer-deps", { cwd: PROJECT_DIR });
+        }
+      } catch (error) {
+        console.warn(`[generate] Post-install error (non-fatal): ${error}`);
+      }
 
       // 7a. Auto-execute schema.sql if Supabase Management API is available
       let schemaResult: { success: boolean; error?: string } | null = null;
@@ -764,6 +795,18 @@ export const generate = action({
         console.log("[generate] Design validation passed");
       }
 
+      // 7b2. Post-generation code validation
+      const codeValidation = await validateGeneratedCode(
+        sandboxActions.readFile,
+        coderResult.filesChanged
+      );
+      if (codeValidation.errors.length > 0) {
+        console.error("[generate] Code validation errors:", codeValidation.errors);
+      }
+      if (codeValidation.warnings.length > 0) {
+        console.warn("[generate] Code validation warnings:", codeValidation.warnings);
+      }
+
       // 7c. Send schema execution result as chat message
       if (schemaResult) {
         const schemaMessage = schemaResult.success
@@ -785,12 +828,11 @@ export const generate = action({
         "app/page.tsx",
         "tailwind.config.ts",
         "tailwind.config.js",
+        "package.json",
       ];
 
       for (const filePath of keyFiles) {
-        // Skip if already saved
-        if (files.has(filePath)) continue;
-
+        // Always re-read from sandbox to catch npm-modified files (e.g. package.json)
         try {
           const fullPath = `${PROJECT_DIR}/${filePath}`;
           const content = await sandbox.files.read(fullPath);
@@ -800,7 +842,7 @@ export const generate = action({
               path: filePath,
               content,
             });
-            console.log(`[generate] Synced template file: ${filePath}`);
+            console.log(`[generate] Synced file: ${filePath}`);
           }
         } catch {
           // File doesn't exist, skip
@@ -878,6 +920,33 @@ export const modify = action({
 
           const restoredCount = await restoreFilesToSandbox(sandbox, storedFiles);
           console.log(`[modify] Restored ${restoredCount} files to new sandbox`);
+
+          // Reinstall packages from restored package.json
+          console.log("[modify] Running npm install to restore packages...");
+          let installResult = await sandbox.commands.run("npm install", { cwd: PROJECT_DIR });
+          if (installResult.exitCode !== 0 && installResult.stderr.includes("ERESOLVE")) {
+            installResult = await sandbox.commands.run("npm install --legacy-peer-deps", { cwd: PROJECT_DIR });
+          }
+          if (installResult.exitCode === 0) {
+            console.log("[modify] Packages reinstalled successfully");
+          } else {
+            console.error(`[modify] Package install failed: ${installResult.stderr.slice(0, 300)}`);
+          }
+
+          // Restart Next.js dev server for clean compilation with restored files
+          console.log("[modify] Restarting dev server for clean compilation...");
+          try {
+            await sandbox.commands.run(`pkill -f "next" || true`);
+          } catch {
+            // pkill may throw due to signal termination — safe to ignore
+          }
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          try {
+            await sandbox.commands.run(`cd ${PROJECT_DIR} && npm run dev > /tmp/next-dev.log 2>&1 &`, { timeoutMs: 5000 });
+          } catch {
+            // Background process launch may throw — safe to ignore
+          }
+          await new Promise((resolve) => setTimeout(resolve, 8000));
 
           // Update session with new sandbox info
           await ctx.runMutation(api.sessions.update, {
@@ -1082,10 +1151,13 @@ export const modify = action({
         "app/globals.css",
         "app/layout.tsx",
         "app/page.tsx",
+        "tailwind.config.ts",
+        "tailwind.config.js",
+        "package.json",
       ];
 
       for (const filePath of keyFiles) {
-        if (files.has(filePath)) continue;
+        // Always re-read from sandbox to catch npm-modified files (e.g. package.json)
         try {
           const fullPath = `${PROJECT_DIR}/${filePath}`;
           const content = await sandbox.files.read(fullPath);

@@ -1,5 +1,5 @@
 /**
- * Chat Agent - Simple Code Editing Flow
+ * Chat Agent - Simple Code Editing Flow (LangChain)
  *
  * A straightforward code editing agent:
  * 1. Receive user message + file context
@@ -7,13 +7,16 @@
  * 3. LLM uses tools to read/write files
  * 4. Return brief response
  *
- * No complex intent extraction or file resolution - just direct editing.
+ * Uses LangChain agent framework (same as coder agent).
  */
 
-import Anthropic from "@anthropic-ai/sdk";
+import { createAgent, tool, anthropicPromptCachingMiddleware } from "langchain";
+import { ChatAnthropic } from "@langchain/anthropic";
+import { z } from "zod";
 import { validatePackageName, type SandboxActions } from "./tools";
 import type { AgentResult, ToolContext, ToolCall } from "./types";
 import { extractDesignTokens } from "../utils/design-tokens";
+import { TAILWIND_V4_RULES, FONT_RULES, DESIGN_SYSTEM_VARS, COMMON_CODE_RULES, validateGlobalsCss } from "../prompts/shared";
 
 // Use Sonnet for better quality edits (Haiku loses code too often)
 const MODEL_NAME = "claude-sonnet-4-20250514";
@@ -46,46 +49,23 @@ const BLOCKED_FILES = new Set([
 ]);
 
 /**
- * Validate globals.css content before writing.
- * Returns null if valid, or an error message if invalid.
- */
-function validateGlobalsCss(content: string): string | null {
-  const lines = content.split("\n");
-  // Find first non-empty, non-comment line
-  const firstContentLine = lines.find(
-    (line) => line.trim() && !line.trim().startsWith("/*") && !line.trim().startsWith("*") && !line.trim().startsWith("//")
-  );
-
-  if (!firstContentLine || !firstContentLine.includes('@import "tailwindcss"')) {
-    return `ERROR: globals.css MUST start with '@import "tailwindcss"' as the first non-comment line. Your file starts with: "${firstContentLine?.trim() ?? "(empty)"}". Rewrite the file with '@import "tailwindcss"' as the first line.`;
-  }
-
-  // Check for Tailwind v3 syntax
-  if (
-    content.includes("@tailwind base") ||
-    content.includes("@tailwind components") ||
-    content.includes("@tailwind utilities")
-  ) {
-    return `ERROR: globals.css contains Tailwind v3 syntax (@tailwind base/components/utilities). This project uses Tailwind v4 which only needs '@import "tailwindcss"'. Remove all @tailwind directives and use '@import "tailwindcss"' instead.`;
-  }
-
-  // Check for @import url() font imports
-  if (content.includes("@import url(")) {
-    return `ERROR: globals.css contains '@import url(...)' for font loading. This breaks Tailwind v4 builds. Use 'next/font/google' in layout.tsx instead of CSS @import url() for fonts. Remove the @import url() line and load fonts via next/font/google.`;
-  }
-
-  return null;
-}
-
-/**
  * System prompt for the code editing agent
  */
 const SYSTEM_PROMPT = `You are a code editing agent for a Next.js website builder. Users describe changes in plain English, you modify their code.
 
 ## How To Work
 
-1. **Read the user's request** - understand what files need to change
-2. **Get missing context** - use read_file if you need to see files not provided
+1. **Think first** - Before making any tool calls, use your thinking to:
+   - Analyze exactly what the user wants changed
+   - Identify which files need modification and why
+   - Plan your implementation approach (what to change, in what order)
+   - Consider edge cases: state management, event propagation, responsive design
+   - If the task is complex (multiple files, new interactions, data flow), plan the full approach before touching any file
+1.5. **Read ALL files you plan to modify** — ALWAYS use read_file to get the current version
+   of EVERY file before writing changes. Never write from memory alone — files may have
+   been modified in previous iterations.
+2. **Get additional context** — use read_file for related files (parent components, shared
+   types, layout) that might be affected by your changes
 3. **Make changes** - use write_file with COMPLETE file content
 4. **Respond briefly** - tell user what you changed (1-2 sentences)
 
@@ -107,11 +87,11 @@ When you write a file, you MUST include ALL existing code that wasn't meant to b
 
 ## What NOT To Do
 
-- ❌ Remove existing CSS or styles (even if adding new styles)
-- ❌ Remove existing functions or components
-- ❌ Simplify or "clean up" code that wasn't asked to change
-- ❌ Write partial files with "// ... rest of code"
-- ❌ Create extra files user didn't ask for
+- Do NOT remove existing CSS or styles (even if adding new styles)
+- Do NOT remove existing functions or components
+- Do NOT simplify or "clean up" code that wasn't asked to change
+- Do NOT write partial files with "// ... rest of code"
+- Do NOT create extra files user didn't ask for
 
 ## Protected Files — NEVER Modify These
 
@@ -125,68 +105,11 @@ The following files are locked and CANNOT be written to. Any attempt will be rej
 
 If the user asks to modify these, explain WHY you can't and suggest the correct alternative.
 
-## Tailwind v4 CSS Rules (CRITICAL)
+${TAILWIND_V4_RULES}
 
-This project uses **Tailwind CSS v4**, which is very different from v3:
+${FONT_RULES}
 
-1. **globals.css MUST start with**: \`@import "tailwindcss";\` — this is the ONLY import needed
-2. **NEVER use v3 syntax**: No \`@tailwind base\`, \`@tailwind components\`, \`@tailwind utilities\`
-3. **NEVER use \`@import url(...)\`** for fonts in CSS — this breaks the build
-4. **Load fonts via \`next/font/google\`** in layout.tsx, NOT via CSS imports
-5. **Custom variants**: Use \`@custom-variant dark (&:where(.dark, .dark *));\` for dark mode
-
-### Correct globals.css structure:
-\`\`\`css
-@import "tailwindcss";
-
-:root {
-  --font-display: 'Font Name', serif;
-  --font-body: 'Font Name', sans-serif;
-  --color-primary: #hexvalue;
-  --color-background: #hexvalue;
-  --color-text: #hexvalue;
-  /* ... more CSS variables ... */
-}
-
-.dark {
-  --color-primary: #hexvalue;
-  --color-background: #hexvalue;
-  --color-text: #hexvalue;
-}
-
-@custom-variant dark (&:where(.dark, .dark *));
-\`\`\`
-
-## Font Rules
-
-- **ALWAYS** load fonts via \`next/font/google\` in app/layout.tsx
-- **NEVER** use \`@import url('https://fonts.googleapis.com/...')\` in CSS
-- Font CSS variables (--font-display, --font-body) are set in globals.css :root
-- Use \`font-display\` and \`font-body\` classes, or \`font-[family-name:var(--font-display)]\`
-
-## Design System — CSS Variables
-
-This app uses CSS custom properties for theming. The key variables are:
-
-- \`--color-primary\` — brand/accent color for buttons, links, highlights
-- \`--color-accent\` — secondary accent color
-- \`--color-background\` — page background
-- \`--color-surface\` — card/section backgrounds
-- \`--color-text\` — main text color
-- \`--color-muted\` — secondary/subtle text
-- \`--font-display\` — heading font family
-- \`--font-body\` — body text font family
-
-### Using CSS variables in Tailwind classes:
-\`\`\`
-bg-[var(--color-background)]    — page background
-bg-[var(--color-surface)]       — card background
-text-[var(--color-text)]        — main text
-text-[var(--color-muted)]       — subtle text
-text-[var(--color-primary)]     — accent text
-bg-[var(--color-primary)]       — accent background
-border-[var(--color-primary)]   — accent border
-\`\`\`
+${DESIGN_SYSTEM_VARS}
 
 ## Debugging Visual Issues
 
@@ -197,6 +120,14 @@ When user says text is "not visible", "can't see", "invisible", or colors are wr
 3. **Fix using CSS variables** — replace hardcoded colors with \`text-[var(--color-text)]\`, \`bg-[var(--color-background)]\`, etc.
 4. **Common cause**: Component uses \`text-white\` on a white background, or \`text-black\` on a dark background. Fix by using the CSS variable instead.
 
+## Fixing Bugs
+When the user reports a bug:
+1. Think through the ROOT CAUSE — don't just patch symptoms
+2. Read ALL related files (the component, its parent, shared state, types)
+3. Trace the data flow: where does the state come from? How does it update?
+4. Fix the actual cause, not just the visible symptom
+5. Test mentally: does your fix handle all edge cases?
+
 {ARCHITECTURE_CONTEXT}
 
 ## Project Stack
@@ -206,12 +137,7 @@ When user says text is "not visible", "can't see", "invisible", or colors are wr
 - Tailwind CSS v4
 - shadcn/ui components (import from @/components/ui/*)
 
-## Common Patterns
-
-- Add \`'use client'\` at top of any component using hooks (useState, useEffect, etc.) or event handlers
-- Import shadcn/ui: \`import { Button } from "@/components/ui/button"\`
-- Import cn utility: \`import { cn } from "@/lib/utils"\`
-- Hydration: never put interactive elements (<button>, <a>) inside each other
+${COMMON_CODE_RULES}
 
 ## Current Project Files
 `;
@@ -248,13 +174,207 @@ export async function runChatAgent(
   config: ChatAgentConfig = {},
   architecture?: string
 ): Promise<AgentResult> {
-  const { maxIterations = MAX_ITERATIONS } = config;
-
   const toolCalls: ToolCall[] = [];
   const filesChanged: string[] = [];
 
   try {
-    const client = new Anthropic();
+    // Define tools using the langchain tool() function
+    const writeFileTool = tool(
+      async ({ path, content }: { path: string; content: string }) => {
+        if (!path || typeof path !== "string") {
+          return "ERROR: write_file requires a valid path";
+        }
+        if (content === undefined || typeof content !== "string") {
+          return "ERROR: write_file requires content";
+        }
+
+        // Block protected config files
+        if (BLOCKED_FILES.has(path)) {
+          return `ERROR: Cannot modify '${path}' — this is a protected config file. Do NOT attempt to edit build configuration files (tailwind.config, next.config, package.json, etc.).`;
+        }
+
+        // Validate globals.css before writing
+        if (path === "app/globals.css") {
+          const validationError = validateGlobalsCss(content);
+          if (validationError) {
+            return validationError;
+          }
+        }
+
+        // Block documentation files
+        if (/\.(md|txt)$/i.test(path) || /readme|changelog|guide/i.test(path)) {
+          return "ERROR: Cannot create documentation files. Modify actual code files instead.";
+        }
+
+        // Check for significant code loss (file shrinking by >40%)
+        const existingContent = context.files.get(path);
+        if (existingContent) {
+          const oldLines = existingContent.split("\n").length;
+          const newLines = content.split("\n").length;
+          const shrinkPercent = ((oldLines - newLines) / oldLines) * 100;
+
+          if (shrinkPercent > 40 && oldLines > 10) {
+            console.warn(`[chat] WARNING: ${path} shrunk by ${shrinkPercent.toFixed(0)}% (${oldLines} → ${newLines} lines)`);
+            return `WARNING: Your edit would remove ${shrinkPercent.toFixed(0)}% of the file (${oldLines} → ${newLines} lines). This seems like you're losing existing code. Please rewrite the file including ALL existing code, only changing what was requested. Don't remove imports, functions, styles, or components that weren't asked to be removed.`;
+          }
+        }
+
+        // Write file
+        context.files.set(path, content);
+        await sandboxActions.writeFile(path, content);
+
+        toolCalls.push({
+          name: "write_file",
+          input: { path, content },
+          output: `Updated ${path}`,
+        });
+
+        if (!filesChanged.includes(path)) {
+          filesChanged.push(path);
+        }
+
+        return `File updated: ${path}`;
+      },
+      {
+        name: "write_file",
+        description:
+          "Write or update a file. ALWAYS write the COMPLETE file content, never partial.",
+        schema: z.object({
+          path: z.string().describe("File path (e.g., 'components/Button.tsx')"),
+          content: z.string().describe("Complete file content"),
+        }),
+      }
+    );
+
+    const readFileTool = tool(
+      async ({ path }: { path: string }) => {
+        if (!path || typeof path !== "string") {
+          return "ERROR: read_file requires a valid path";
+        }
+
+        // Check cache first
+        const cached = context.files.get(path);
+        if (cached) {
+          return cached;
+        }
+
+        // Read from sandbox
+        const content = await sandboxActions.readFile(path);
+        if (content) {
+          context.files.set(path, content);
+          toolCalls.push({
+            name: "read_file",
+            input: { path },
+            output: content,
+          });
+          return content;
+        }
+
+        return `File not found: ${path}`;
+      },
+      {
+        name: "read_file",
+        description: "Read a file not in the provided context.",
+        schema: z.object({
+          path: z.string().describe("File path to read"),
+        }),
+      }
+    );
+
+    const deleteFileTool = tool(
+      async ({ path }: { path: string }) => {
+        if (!path || typeof path !== "string") {
+          return "ERROR: delete_file requires a valid path";
+        }
+
+        // Block protected config files
+        if (BLOCKED_FILES.has(path)) {
+          return `ERROR: Cannot delete '${path}' — this is a protected config file.`;
+        }
+
+        context.files.delete(path);
+        await sandboxActions.deleteFile(path);
+
+        toolCalls.push({
+          name: "delete_file",
+          input: { path },
+          output: `Deleted ${path}`,
+        });
+
+        if (!filesChanged.includes(path)) {
+          filesChanged.push(path);
+        }
+
+        return `File deleted: ${path}`;
+      },
+      {
+        name: "delete_file",
+        description: "Delete a file from the project.",
+        schema: z.object({
+          path: z.string().describe("File path to delete"),
+        }),
+      }
+    );
+
+    const installPackagesTool = tool(
+      async ({ packages }: { packages: string }) => {
+        if (!packages || typeof packages !== "string") {
+          return "ERROR: install_packages requires packages string";
+        }
+
+        const packageList = packages.trim().split(/\s+/);
+        const invalid = packageList.filter((p) => !validatePackageName(p));
+
+        if (invalid.length > 0) {
+          return `ERROR: Package(s) not allowed: ${invalid.join(", ")}`;
+        }
+
+        try {
+          let result = await sandboxActions.runCommand(`npm install ${packageList.join(" ")}`);
+
+          if (result.exitCode !== 0 && result.stderr.includes("ERESOLVE")) {
+            result = await sandboxActions.runCommand(
+              `npm install --legacy-peer-deps ${packageList.join(" ")}`
+            );
+          }
+
+          if (result.exitCode !== 0) {
+            return `Failed to install: ${result.stderr.slice(0, 300)}`;
+          }
+
+          toolCalls.push({
+            name: "install_packages",
+            input: { packages },
+            output: `Installed: ${packageList.join(", ")}`,
+          });
+
+          // After successful install, sync updated package.json back to Convex
+          try {
+            const pkgContent = await sandboxActions.readFile("package.json");
+            if (pkgContent) {
+              context.files.set("package.json", pkgContent);
+              await sandboxActions.writeFile("package.json", pkgContent);
+            }
+          } catch {
+            // Non-fatal: package.json sync failed, will be caught by keyFiles sync later
+          }
+
+          return `Installed: ${packageList.join(", ")}`;
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : "Unknown error";
+          return `Failed to install packages: ${msg}`;
+        }
+      },
+      {
+        name: "install_packages",
+        description: "Install npm packages.",
+        schema: z.object({
+          packages: z.string().describe("Space-separated package names"),
+        }),
+      }
+    );
+
+    const tools = [writeFileTool, readFileTool, deleteFileTool, installPackagesTool];
 
     // Build system prompt with file context
     const fileContext = buildFileContext(context.files);
@@ -287,139 +407,62 @@ Use these exact values when fixing color/visibility issues. Reference them via C
       }
     }
 
-    const systemPrompt = SYSTEM_PROMPT.replace("{ARCHITECTURE_CONTEXT}", architectureContext) + fileContext;
+    const fullSystemPrompt = SYSTEM_PROMPT.replace("{ARCHITECTURE_CONTEXT}", architectureContext) + fileContext;
 
-    // Define simple tools
-    const tools: Anthropic.Tool[] = [
+    // Create the model instance
+    const model = new ChatAnthropic({
+      model: MODEL_NAME,
+      maxTokens: 25000,
+      streaming: true,
+      thinking: {
+        type: "enabled",
+        budget_tokens: 10000,
+      },
+    });
+
+    // Create the agent using the LangChain API
+    const agent = createAgent({
+      model,
+      tools,
+      systemPrompt: fullSystemPrompt,
+      middleware: [
+        anthropicPromptCachingMiddleware({ minMessagesToCache: 1 }),
+      ],
+    });
+
+    // Run the agent
+    const result = await agent.invoke(
       {
-        name: "write_file",
-        description:
-          "Write or update a file. ALWAYS write the COMPLETE file content, never partial.",
-        input_schema: {
-          type: "object" as const,
-          properties: {
-            path: {
-              type: "string",
-              description: "File path (e.g., 'components/Button.tsx')",
-            },
-            content: {
-              type: "string",
-              description: "Complete file content",
-            },
-          },
-          required: ["path", "content"],
-        },
+        messages: [{ role: "user", content: message }],
       },
       {
-        name: "read_file",
-        description: "Read a file not in the provided context.",
-        input_schema: {
-          type: "object" as const,
-          properties: {
-            path: {
-              type: "string",
-              description: "File path to read",
-            },
-          },
-          required: ["path"],
-        },
-      },
-      {
-        name: "delete_file",
-        description: "Delete a file from the project.",
-        input_schema: {
-          type: "object" as const,
-          properties: {
-            path: {
-              type: "string",
-              description: "File path to delete",
-            },
-          },
-          required: ["path"],
-        },
-      },
-      {
-        name: "install_packages",
-        description: "Install npm packages.",
-        input_schema: {
-          type: "object" as const,
-          properties: {
-            packages: {
-              type: "string",
-              description: "Space-separated package names",
-            },
-          },
-          required: ["packages"],
-        },
-      },
-    ];
-
-    // Agentic loop
-    const messages: Anthropic.MessageParam[] = [{ role: "user", content: message }];
-    let iterations = 0;
-    let finalResponse = "";
-
-    while (iterations < maxIterations) {
-      iterations++;
-
-      const response = await client.messages.create({
-        model: MODEL_NAME,
-        max_tokens: 8192,
-        system: systemPrompt,
-        tools,
-        messages,
-      });
-
-      // Check for tool use
-      const toolUseBlocks = response.content.filter(
-        (block): block is Anthropic.ToolUseBlock => block.type === "tool_use"
-      );
-
-      // Extract text response
-      const textBlocks = response.content.filter(
-        (block): block is Anthropic.TextBlock => block.type === "text"
-      );
-
-      if (textBlocks.length > 0) {
-        finalResponse = textBlocks.map((b) => b.text).join("\n");
+        recursionLimit: MAX_ITERATIONS * 3, // Each iteration may use multiple recursion steps
       }
+    );
 
-      // If no tool calls, we're done
-      if (toolUseBlocks.length === 0 || response.stop_reason === "end_turn") {
-        break;
+    // Log thinking blocks for debugging
+    for (const msg of result.messages) {
+      if (msg.content && Array.isArray(msg.content)) {
+        for (const block of msg.content) {
+          if (block.type === "thinking" && (block as any).thinking) {
+            console.log("[chat] Thinking:", String((block as any).thinking).substring(0, 200));
+            break;
+          }
+        }
       }
-
-      // Process tool calls
-      const toolResults: Anthropic.ToolResultBlockParam[] = [];
-
-      for (const toolUse of toolUseBlocks) {
-        const result = await executeToolCall(
-          toolUse.name,
-          toolUse.input as Record<string, unknown>,
-          context,
-          sandboxActions,
-          toolCalls,
-          filesChanged
-        );
-
-        toolResults.push({
-          type: "tool_result",
-          tool_use_id: toolUse.id,
-          content: result,
-        });
-      }
-
-      // Add assistant message and tool results
-      messages.push({
-        role: "assistant",
-        content: response.content,
-      });
-
-      messages.push({
-        role: "user",
-        content: toolResults,
-      });
     }
+
+    // Extract the final response text
+    const lastMessage = result.messages[result.messages.length - 1];
+    const finalResponse =
+      typeof lastMessage?.content === "string"
+        ? lastMessage.content
+        : Array.isArray(lastMessage?.content)
+          ? lastMessage.content
+              .filter((b: any) => b.type === "text")
+              .map((b: any) => b.text)
+              .join("\n")
+          : `Modified ${filesChanged.length} files.`;
 
     return {
       response: finalResponse,
@@ -435,173 +478,6 @@ Use these exact values when fixing color/visibility issues. Reference them via C
       filesChanged,
       error: `Chat agent failed: ${errorMessage}`,
     };
-  }
-}
-
-/**
- * Execute a tool call
- */
-async function executeToolCall(
-  name: string,
-  input: Record<string, unknown>,
-  context: ToolContext,
-  sandboxActions: SandboxActions,
-  toolCalls: ToolCall[],
-  filesChanged: string[]
-): Promise<string> {
-  switch (name) {
-    case "write_file": {
-      const path = input.path as string | undefined;
-      const content = input.content as string | undefined;
-
-      if (!path || typeof path !== "string") {
-        return "ERROR: write_file requires a valid path";
-      }
-      if (content === undefined || typeof content !== "string") {
-        return "ERROR: write_file requires content";
-      }
-
-      // Block protected config files
-      if (BLOCKED_FILES.has(path)) {
-        return `ERROR: Cannot modify '${path}' — this is a protected config file. Do NOT attempt to edit build configuration files (tailwind.config, next.config, package.json, etc.).`;
-      }
-
-      // Validate globals.css before writing
-      if (path === "app/globals.css") {
-        const validationError = validateGlobalsCss(content);
-        if (validationError) {
-          return validationError;
-        }
-      }
-
-      // Block documentation files
-      if (/\.(md|txt)$/i.test(path) || /readme|changelog|guide/i.test(path)) {
-        return "ERROR: Cannot create documentation files. Modify actual code files instead.";
-      }
-
-      // Check for significant code loss (file shrinking by >40%)
-      const existingContent = context.files.get(path);
-      if (existingContent) {
-        const oldLines = existingContent.split("\n").length;
-        const newLines = content.split("\n").length;
-        const shrinkPercent = ((oldLines - newLines) / oldLines) * 100;
-
-        if (shrinkPercent > 40 && oldLines > 10) {
-          console.warn(`[chat] WARNING: ${path} shrunk by ${shrinkPercent.toFixed(0)}% (${oldLines} → ${newLines} lines)`);
-          return `WARNING: Your edit would remove ${shrinkPercent.toFixed(0)}% of the file (${oldLines} → ${newLines} lines). This seems like you're losing existing code. Please rewrite the file including ALL existing code, only changing what was requested. Don't remove imports, functions, styles, or components that weren't asked to be removed.`;
-        }
-      }
-
-      // Write file
-      context.files.set(path, content);
-      await sandboxActions.writeFile(path, content);
-
-      toolCalls.push({
-        name: "write_file",
-        input: { path, content },
-        output: `Updated ${path}`,
-      });
-
-      if (!filesChanged.includes(path)) {
-        filesChanged.push(path);
-      }
-
-      return `File updated: ${path}`;
-    }
-
-    case "read_file": {
-      const path = input.path as string | undefined;
-
-      if (!path || typeof path !== "string") {
-        return "ERROR: read_file requires a valid path";
-      }
-
-      // Check cache first
-      const cached = context.files.get(path);
-      if (cached) {
-        return cached;
-      }
-
-      // Read from sandbox
-      const content = await sandboxActions.readFile(path);
-      if (content) {
-        context.files.set(path, content);
-        toolCalls.push({
-          name: "read_file",
-          input: { path },
-          output: content,
-        });
-        return content;
-      }
-
-      return `File not found: ${path}`;
-    }
-
-    case "delete_file": {
-      const path = input.path as string | undefined;
-
-      if (!path || typeof path !== "string") {
-        return "ERROR: delete_file requires a valid path";
-      }
-
-      // Block protected config files
-      if (BLOCKED_FILES.has(path)) {
-        return `ERROR: Cannot delete '${path}' — this is a protected config file.`;
-      }
-
-      context.files.delete(path);
-      await sandboxActions.deleteFile(path);
-
-      toolCalls.push({
-        name: "delete_file",
-        input: { path },
-        output: `Deleted ${path}`,
-      });
-
-      if (!filesChanged.includes(path)) {
-        filesChanged.push(path);
-      }
-
-      return `File deleted: ${path}`;
-    }
-
-    case "install_packages": {
-      const packages = input.packages as string | undefined;
-
-      if (!packages || typeof packages !== "string") {
-        return "ERROR: install_packages requires packages string";
-      }
-
-      const packageList = packages.trim().split(/\s+/);
-      const invalid = packageList.filter((p) => !validatePackageName(p));
-
-      if (invalid.length > 0) {
-        return `ERROR: Package(s) not allowed: ${invalid.join(", ")}`;
-      }
-
-      let result = await sandboxActions.runCommand(`npm install ${packageList.join(" ")}`);
-
-      if (result.exitCode !== 0 && result.stderr.includes("ERESOLVE")) {
-        result = await sandboxActions.runCommand(
-          `npm install --legacy-peer-deps ${packageList.join(" ")}`
-        );
-      }
-
-      if (result.exitCode !== 0) {
-        return `Failed to install: ${result.stderr.slice(0, 300)}`;
-      }
-
-      toolCalls.push({
-        name: "install_packages",
-        input: { packages },
-        output: `Installed: ${packageList.join(", ")}`,
-      });
-
-      return `Installed: ${packageList.join(", ")}`;
-    }
-
-    default:
-      return `Unknown tool: ${name}`;
   }
 }
 

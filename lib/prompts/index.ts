@@ -7,13 +7,17 @@
 export { ARCHITECTURE_PROMPT } from "./architecture";
 export { CODER_PROMPT } from "./coder";
 export {
-  CHAT_PROMPT_WITH_CONTEXT,
-  CHAT_PROMPT_SMART_CONTEXT,
   CHAT_PROMPT_WITH_EDIT_SCOPE,
-  formatChatPromptWithContext,
-  formatChatPromptSmartContext,
   formatChatPromptWithEditScope,
 } from "./chat";
+export {
+  COMMON_ERROR_FIXES,
+  TAILWIND_V4_RULES,
+  FONT_RULES,
+  DESIGN_SYSTEM_VARS,
+  COMMON_CODE_RULES,
+  validateGlobalsCss,
+} from "./shared";
 export {
   DESIGN_SKILL_COMPACT,
   DESIGN_SKILL_FULL,

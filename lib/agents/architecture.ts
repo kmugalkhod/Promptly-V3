@@ -8,7 +8,7 @@
  * Model: Claude Haiku
  */
 
-import { createAgent, tool } from "langchain";
+import { createAgent, tool, anthropicPromptCachingMiddleware } from "langchain";
 import { ChatAnthropic } from "@langchain/anthropic";
 import { z } from "zod";
 import { HumanMessage, SystemMessage, AIMessage } from "@langchain/core/messages";
@@ -86,6 +86,9 @@ export async function runArchitectureAgent(
       model,
       tools: [writeFileTool],
       systemPrompt: ARCHITECTURE_PROMPT,
+      middleware: [
+        anthropicPromptCachingMiddleware({ minMessagesToCache: 1 }),
+      ],
     });
 
     // Run the agent with recursion limit

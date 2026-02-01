@@ -8,10 +8,10 @@
  * Model: Claude Haiku
  */
 
-import { createAgent, tool } from "langchain";
+import { createAgent, tool, anthropicPromptCachingMiddleware } from "langchain";
 import { ChatAnthropic } from "@langchain/anthropic";
 import { z } from "zod";
-import { CODER_PROMPT } from "../prompts";
+import { CODER_PROMPT, validateGlobalsCss } from "../prompts";
 import { validatePackageName, type SandboxActions } from "./tools";
 import type { AgentResult, ToolContext, ToolCall } from "./types";
 
@@ -40,6 +40,12 @@ export async function runCoderAgent(
   const writeFileTool = tool(
     async ({ file_path, content }: { file_path: string; content: string }) => {
       try {
+        // Validate globals.css before writing (block v3 syntax)
+        if (file_path === "app/globals.css") {
+          const validationError = validateGlobalsCss(content);
+          if (validationError) return validationError;
+        }
+
         context.files.set(file_path, content);
         context.recentFiles = [
           file_path,
@@ -204,6 +210,17 @@ export async function runCoderAgent(
           output: `Installed: ${packageList.join(", ")}`,
         });
 
+        // After successful install, sync updated package.json back to Convex
+        try {
+          const pkgContent = await sandboxActions.readFile("package.json");
+          if (pkgContent) {
+            context.files.set("package.json", pkgContent);
+            await sandboxActions.writeFile("package.json", pkgContent);
+          }
+        } catch {
+          // Non-fatal: package.json sync failed, will be caught by keyFiles sync later
+        }
+
         return `Installed: ${packageList.join(", ")}`;
       } catch (error) {
         const msg = error instanceof Error ? error.message : "Unknown error";
@@ -233,8 +250,12 @@ export async function runCoderAgent(
     // Create the model instance
     const model = new ChatAnthropic({
       model: MODEL_NAME,
-      temperature: 0,
-      maxTokens: 16384,
+      maxTokens: 25000,
+      streaming: true,
+      thinking: {
+        type: "enabled",
+        budget_tokens: 10000,
+      },
     });
 
     // Create the agent using the new API
@@ -242,6 +263,9 @@ export async function runCoderAgent(
       model,
       tools,
       systemPrompt: CODER_PROMPT,
+      middleware: [
+        anthropicPromptCachingMiddleware({ minMessagesToCache: 1 }),
+      ],
     });
 
     // Build the input message with explicit design extraction instructions
@@ -295,6 +319,18 @@ Preview is live at: ${previewUrl}`;
         recursionLimit: 75, // Increased from default 25
       }
     );
+
+    // Log thinking blocks for debugging
+    for (const msg of result.messages) {
+      if (msg.content && Array.isArray(msg.content)) {
+        for (const block of msg.content) {
+          if (block.type === "thinking" && block.thinking) {
+            console.log("[coder] Thinking:", String((block as any).thinking).substring(0, 200));
+            break; // Only log first thinking block
+          }
+        }
+      }
+    }
 
     // Extract the final output from messages
     const lastMessage = result.messages[result.messages.length - 1];
