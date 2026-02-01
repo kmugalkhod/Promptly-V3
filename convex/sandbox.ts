@@ -126,8 +126,10 @@ export const initializeForSession = action({
     console.log(`[initializeForSession] Waiting for dev server to start...`);
     await new Promise((resolve) => setTimeout(resolve, 3000));
 
-    // 6. Clean up default files
+    // 6. Clean up default template files (so restored files take precedence)
     await sandbox.commands.run(`rm -f ${PROJECT_DIR}/app/page.tsx`);
+    await sandbox.commands.run(`rm -f ${PROJECT_DIR}/app/layout.tsx`);
+    await sandbox.commands.run(`rm -f ${PROJECT_DIR}/app/globals.css`);
     await sandbox.commands.run(`rm -f ${PROJECT_DIR}/components/ui/resizable.tsx`);
 
     // 7. Restore all files from Convex
@@ -147,10 +149,33 @@ export const initializeForSession = action({
     }
     console.log(`[initializeForSession] Restored ${restoredCount}/${files.length} files`);
 
-    // 8. Wait for Next.js hot reload to process restored files
-    // The file writes above should trigger hot reload automatically
-    console.log(`[initializeForSession] Waiting for hot reload...`);
-    await new Promise((resolve) => setTimeout(resolve, 5000));
+    // 7b. Run npm install to restore packages
+    console.log(`[initializeForSession] Running npm install...`);
+    try {
+      let installResult = await sandbox.commands.run("npm install", { cwd: PROJECT_DIR });
+      if (installResult.exitCode !== 0 && installResult.stderr.includes("ERESOLVE")) {
+        installResult = await sandbox.commands.run("npm install --legacy-peer-deps", { cwd: PROJECT_DIR });
+      }
+    } catch (installError) {
+      console.warn(`[initializeForSession] npm install error (non-fatal): ${installError}`);
+    }
+
+    // 8. Restart Next.js dev server for clean compilation with restored files
+    // Hot reload can't reliably recompile CSS variables, @theme directives, and next/font declarations
+    console.log(`[initializeForSession] Restarting dev server for clean compilation...`);
+    try {
+      await sandbox.commands.run(`pkill -f "next" || true`);
+    } catch {
+      // pkill may throw due to signal termination — safe to ignore
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    try {
+      await sandbox.commands.run(`cd ${PROJECT_DIR} && npm run dev > /tmp/next-dev.log 2>&1 &`, { timeoutMs: 5000 });
+    } catch {
+      // Background process launch may throw — safe to ignore
+    }
+    // Wait for dev server to compile and be ready
+    await new Promise((resolve) => setTimeout(resolve, 8000));
 
     const sandboxId = sandbox.sandboxId;
     const previewUrl = `https://${sandbox.getHost(3000)}`;
@@ -272,8 +297,10 @@ export const recreate = action({
     console.log(`[recreate] Waiting for dev server to start...`);
     await new Promise((resolve) => setTimeout(resolve, 3000));
 
-    // Clean up default files
+    // Clean up default template files (so restored files take precedence)
     await sandbox.commands.run(`rm -f ${PROJECT_DIR}/app/page.tsx`);
+    await sandbox.commands.run(`rm -f ${PROJECT_DIR}/app/layout.tsx`);
+    await sandbox.commands.run(`rm -f ${PROJECT_DIR}/app/globals.css`);
     await sandbox.commands.run(`rm -f ${PROJECT_DIR}/components/ui/resizable.tsx`);
 
     const sandboxId = sandbox.sandboxId;
@@ -303,9 +330,31 @@ export const recreate = action({
 
     console.log(`Sandbox recreated: ${sandboxId}, restored ${restoredFiles} files`);
 
-    // Wait for hot reload to process restored files
-    console.log(`[recreate] Waiting for hot reload...`);
-    await new Promise((resolve) => setTimeout(resolve, 5000));
+    // Run npm install to restore packages
+    console.log(`[recreate] Running npm install...`);
+    try {
+      let installResult = await sandbox.commands.run("npm install", { cwd: PROJECT_DIR });
+      if (installResult.exitCode !== 0 && installResult.stderr.includes("ERESOLVE")) {
+        installResult = await sandbox.commands.run("npm install --legacy-peer-deps", { cwd: PROJECT_DIR });
+      }
+    } catch (installError) {
+      console.warn(`[recreate] npm install error (non-fatal): ${installError}`);
+    }
+
+    // Restart Next.js dev server for clean compilation with restored files
+    console.log(`[recreate] Restarting dev server for clean compilation...`);
+    try {
+      await sandbox.commands.run(`pkill -f "next" || true`);
+    } catch {
+      // pkill may throw due to signal termination — safe to ignore
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    try {
+      await sandbox.commands.run(`cd ${PROJECT_DIR} && npm run dev > /tmp/next-dev.log 2>&1 &`, { timeoutMs: 5000 });
+    } catch {
+      // Background process launch may throw — safe to ignore
+    }
+    await new Promise((resolve) => setTimeout(resolve, 8000));
 
     // Update session with new sandbox info
     await ctx.runMutation(api.sessions.update, {
@@ -408,8 +457,10 @@ export const extendTimeout = action({
         console.log(`[extendTimeout] Waiting for dev server to start...`);
         await new Promise((resolve) => setTimeout(resolve, 3000));
 
-        // Clean up default files
+        // Clean up default template files (so restored files take precedence)
         await newSandbox.commands.run(`rm -f ${PROJECT_DIR}/app/page.tsx`);
+        await newSandbox.commands.run(`rm -f ${PROJECT_DIR}/app/layout.tsx`);
+        await newSandbox.commands.run(`rm -f ${PROJECT_DIR}/app/globals.css`);
         await newSandbox.commands.run(`rm -f ${PROJECT_DIR}/components/ui/resizable.tsx`);
 
         const newSandboxId = newSandbox.sandboxId;
@@ -438,9 +489,31 @@ export const extendTimeout = action({
 
         console.log(`[extendTimeout] Sandbox recreated: ${newSandboxId}, restored ${restoredFiles} files`);
 
-        // Wait for hot reload to process restored files
-        console.log(`[extendTimeout] Waiting for hot reload...`);
-        await new Promise((resolve) => setTimeout(resolve, 5000));
+        // Run npm install to restore packages
+        console.log(`[extendTimeout] Running npm install...`);
+        try {
+          let installResult = await newSandbox.commands.run("npm install", { cwd: PROJECT_DIR });
+          if (installResult.exitCode !== 0 && installResult.stderr.includes("ERESOLVE")) {
+            installResult = await newSandbox.commands.run("npm install --legacy-peer-deps", { cwd: PROJECT_DIR });
+          }
+        } catch (installError) {
+          console.warn(`[extendTimeout] npm install error (non-fatal): ${installError}`);
+        }
+
+        // Restart Next.js dev server for clean compilation with restored files
+        console.log(`[extendTimeout] Restarting dev server for clean compilation...`);
+        try {
+          await newSandbox.commands.run(`pkill -f "next" || true`);
+        } catch {
+          // pkill may throw due to signal termination — safe to ignore
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        try {
+          await newSandbox.commands.run(`cd ${PROJECT_DIR} && npm run dev > /tmp/next-dev.log 2>&1 &`, { timeoutMs: 5000 });
+        } catch {
+          // Background process launch may throw — safe to ignore
+        }
+        await new Promise((resolve) => setTimeout(resolve, 8000));
 
         // Update session with new sandbox info
         await ctx.runMutation(api.sessions.update, {
