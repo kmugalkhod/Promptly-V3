@@ -17,6 +17,7 @@ import { validatePackageName, type SandboxActions } from "./tools";
 import type { AgentResult, ToolContext, ToolCall } from "./types";
 import { extractDesignTokens } from "../utils/design-tokens";
 import { TAILWIND_V4_RULES, FONT_RULES, DESIGN_SYSTEM_VARS, COMMON_CODE_RULES, validateGlobalsCss } from "../prompts/shared";
+import { getSkillsMetadata, formatSkillsForPrompt, loadSkill } from "./skills";
 
 // Use Sonnet for better quality edits (Haiku loses code too often)
 const MODEL_NAME = "claude-sonnet-4-20250514";
@@ -176,6 +177,10 @@ export async function runChatAgent(
 ): Promise<AgentResult> {
   const toolCalls: ToolCall[] = [];
   const filesChanged: string[] = [];
+
+  // Load skills metadata for system prompt
+  const skills = await getSkillsMetadata();
+  const skillsSection = formatSkillsForPrompt(skills, "chat");
 
   try {
     // Define tools using the langchain tool() function
@@ -374,7 +379,29 @@ export async function runChatAgent(
       }
     );
 
-    const tools = [writeFileTool, readFileTool, deleteFileTool, installPackagesTool];
+    const loadSkillTool = tool(
+      async ({ skill_name }: { skill_name: string }) => {
+        const result = await loadSkill(skill_name);
+        toolCalls.push({
+          name: "load_skill",
+          input: { skill_name },
+          output: result.content,
+        });
+        return result.content;
+      },
+      {
+        name: "load_skill",
+        description:
+          "Load specialized instructions for a skill. Use this when you need detailed guidance for a specific task type. Check <available_skills> in your system prompt to see what's available.",
+        schema: z.object({
+          skill_name: z
+            .string()
+            .describe("Name of the skill to load (e.g., 'react-component', 'rls-policies')"),
+        }),
+      }
+    );
+
+    const tools = [writeFileTool, readFileTool, deleteFileTool, installPackagesTool, loadSkillTool];
 
     // Build system prompt with file context
     const fileContext = buildFileContext(context.files);
@@ -407,7 +434,12 @@ Use these exact values when fixing color/visibility issues. Reference them via C
       }
     }
 
-    const fullSystemPrompt = SYSTEM_PROMPT.replace("{ARCHITECTURE_CONTEXT}", architectureContext) + fileContext;
+    // Append skills section to system prompt if available
+    const systemPromptWithSkills = skillsSection
+      ? `${SYSTEM_PROMPT}\n\n${skillsSection}`
+      : SYSTEM_PROMPT;
+
+    const fullSystemPrompt = systemPromptWithSkills.replace("{ARCHITECTURE_CONTEXT}", architectureContext) + fileContext;
 
     // Create the model instance
     const model = new ChatAnthropic({

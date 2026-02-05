@@ -14,6 +14,7 @@ import { z } from "zod";
 import { CODER_PROMPT, validateGlobalsCss } from "../prompts";
 import { validatePackageName, type SandboxActions } from "./tools";
 import type { AgentResult, ToolContext, ToolCall } from "./types";
+import { getSkillsMetadata, formatSkillsForPrompt, loadSkill } from "./skills";
 
 const MODEL_NAME = "claude-sonnet-4-20250514";
 
@@ -35,6 +36,10 @@ export async function runCoderAgent(
 ): Promise<AgentResult> {
   const toolCalls: ToolCall[] = [];
   const filesChanged: string[] = [];
+
+  // Load skills metadata for system prompt
+  const skills = await getSkillsMetadata();
+  const skillsSection = formatSkillsForPrompt(skills, "coder");
 
   // Define tools using the langchain tool() function
   const writeFileTool = tool(
@@ -239,11 +244,34 @@ export async function runCoderAgent(
     }
   );
 
+  const loadSkillTool = tool(
+    async ({ skill_name }: { skill_name: string }) => {
+      const result = await loadSkill(skill_name);
+      toolCalls.push({
+        name: "load_skill",
+        input: { skill_name },
+        output: result.content,
+      });
+      return result.content;
+    },
+    {
+      name: "load_skill",
+      description:
+        "Load specialized instructions for a skill. Use this when you need detailed guidance for a specific task type. Check <available_skills> in your system prompt to see what's available.",
+      schema: z.object({
+        skill_name: z
+          .string()
+          .describe("Name of the skill to load (e.g., 'react-component', 'rls-policies')"),
+      }),
+    }
+  );
+
   const tools = [
     writeFileTool,
     readFileTool,
     updateFileTool,
     installPackagesTool,
+    loadSkillTool,
   ];
 
   try {
@@ -258,11 +286,16 @@ export async function runCoderAgent(
       },
     });
 
+    // Build system prompt with skills metadata
+    const systemPromptWithSkills = skillsSection
+      ? `${CODER_PROMPT}\n\n${skillsSection}`
+      : CODER_PROMPT;
+
     // Create the agent using the new API
     const agent = createAgent({
       model,
       tools,
-      systemPrompt: CODER_PROMPT,
+      systemPrompt: systemPromptWithSkills,
       middleware: [
         anthropicPromptCachingMiddleware({ minMessagesToCache: 1 }),
       ],
