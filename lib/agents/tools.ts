@@ -8,6 +8,7 @@
  */
 
 import type { AnthropicTool, ToolContext, ToolResult } from "./types";
+import { loadSkill } from "./skills";
 
 /**
  * Whitelist of allowed packages (matches PACKAGE REFERENCE in architecture prompt)
@@ -178,6 +179,23 @@ export const TOOL_DEFINITIONS: Record<string, AnthropicTool> = {
       required: [],
     },
   },
+
+  load_skill: {
+    name: "load_skill",
+    description:
+      "Load specialized instructions for a skill. Use this when you need detailed guidance for a specific task type like react-component, form-builder, rls-policies, or fix-bug.",
+    input_schema: {
+      type: "object",
+      properties: {
+        skill_name: {
+          type: "string",
+          description:
+            "Name of the skill to load (e.g., 'react-component', 'rls-policies', 'fix-bug')",
+        },
+      },
+      required: ["skill_name"],
+    },
+  },
 };
 
 /**
@@ -187,8 +205,8 @@ export function getToolsForAgent(
   agentName: "architecture" | "coder" | "chat"
 ): AnthropicTool[] {
   const toolNames = {
-    architecture: ["write_file"],
-    coder: ["read_file", "write_file", "update_file", "install_packages"],
+    architecture: ["write_file", "load_skill"],
+    coder: ["read_file", "write_file", "update_file", "install_packages", "load_skill"],
     chat: [
       "read_file",
       "write_file",
@@ -196,6 +214,7 @@ export function getToolsForAgent(
       "grep_code",
       "list_project_files",
       "install_packages",
+      "load_skill",
     ],
   };
 
@@ -251,12 +270,26 @@ export async function executeTool(
     case "list_project_files":
       return executeListProjectFiles(context, sandboxActions);
 
+    case "load_skill":
+      return executeLoadSkill(input.skill_name as string);
+
     default:
       return {
         success: false,
         message: `Unknown tool: ${toolName}`,
       };
   }
+}
+
+/**
+ * Load skill tool implementation
+ */
+async function executeLoadSkill(skillName: string): Promise<ToolResult> {
+  const result = await loadSkill(skillName);
+  return {
+    success: result.success,
+    message: result.content,
+  };
 }
 
 /**

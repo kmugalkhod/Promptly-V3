@@ -51,3 +51,18 @@ export type {
   ModificationRequest,
   AnthropicTool,
 } from "./types";
+
+// Skills system
+export {
+  getSkillsMetadata,
+  formatSkillsForPrompt,
+  loadSkillTool,
+  loadSkill,
+  clearSkillsCache,
+} from "./skills";
+export type {
+  SkillMetadata,
+  SkillContent,
+  SkillLoadResult,
+  SkillsConfig,
+} from "./skills.types";
