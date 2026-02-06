@@ -10,14 +10,7 @@ export {
   CHAT_PROMPT_WITH_EDIT_SCOPE,
   formatChatPromptWithEditScope,
 } from "./chat";
-export {
-  COMMON_ERROR_FIXES,
-  TAILWIND_V4_RULES,
-  FONT_RULES,
-  DESIGN_SYSTEM_VARS,
-  COMMON_CODE_RULES,
-  validateGlobalsCss,
-} from "./shared";
+export { validateGlobalsCss } from "./shared";
 export {
   DESIGN_SKILL_COMPACT,
   DESIGN_SKILL_FULL,

@@ -5,8 +5,6 @@
  * Includes edit scope enforcement and diff-based editing instructions.
  */
 
-import { COMMON_ERROR_FIXES } from "./shared";
-
 /**
  * New prompt with edit scope enforcement
  */
@@ -64,7 +62,7 @@ export const CHAT_PROMPT_WITH_EDIT_SCOPE = `You are an expert Next.js developer 
 - Add 'use client' directive if component uses hooks/events
 - Keep TypeScript types consistent
 
-${COMMON_ERROR_FIXES}
+Load relevant skills (e.g., "fix-bug", "hydration-safety") for error diagnosis and fixing patterns.
 
 ## When to Recommend Architecture Agent
 - New major features (auth, payments, new pages)

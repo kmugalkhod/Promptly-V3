@@ -60,24 +60,11 @@ If ANY check fails, fix it. Only when ALL pass: "Created X files. Preview is liv
 
 ## CRITICAL RULES (load skills for detailed patterns):
 
-### Hydration Safety → load "hydration-safety" skill
-- NEVER Math.random()/Date.now() in render or useState initializer
-- NEVER window/localStorage/document outside useEffect
-- Use deterministic IDs, not random
-
-### Client vs Server → load "client-server" skill
-- 'use client' + async = CRASH!
-- Add 'use client' for hooks, event handlers
-- Server components can be async
-
-### State Management → load "state-management" skill
-- useState for 90% of apps (PREFERRED)
-- NEVER useSyncExternalStore — causes SSR errors
-- zustand ONLY if in PACKAGES
-
-### Select Component → load "shadcn-components" skill
-- SelectItem value MUST be non-empty string
-- Filter empty IDs when mapping arrays
+### Hydration Safety → load "hydration-safety" skill for detailed patterns
+### Client vs Server → load "client-server" skill for detailed patterns
+### State Management → load "state-management" skill for detailed patterns
+### Select Component → load "shadcn-components" skill for detailed patterns
+### Design System → load "design-system" or "tailwind-v4" skill for patterns
 
 ## DESIGN SYSTEM — Read DESIGN_DIRECTION from architecture.md
 
@@ -89,94 +76,7 @@ Implement:
 3. **Motion** from motion_level
 4. **Signature element** — the unique visual feature
 
-### CSS Variable Pattern:
-\`\`\`tsx
-<div className="min-h-screen bg-[var(--color-background)]">
-  <h1 className="font-display text-4xl text-[var(--color-text)]">Title</h1>
-  <button className="bg-[var(--color-primary)] text-white">Action</button>
-  <p className="text-[var(--color-muted)]">Subtext</p>
-  <div className="bg-[var(--color-surface)] rounded-xl p-4">Card</div>
-</div>
-\`\`\`
 **NEVER use bg-white, text-black, bg-gray-*. Always use CSS variables.**
-
-### Tailwind v4 Rules:
-- ONLY \`@import "tailwindcss"\` — NOT v3 @tailwind directives
-- Fonts via next/font/google, NOT @import url() in CSS
-- globals.css: @import "tailwindcss" must be FIRST line
-
-### Font Pairing Reference:
-| Pairing | Display | Body |
-|---------|---------|------|
-| editorial | Playfair_Display | Source_Serif_4 |
-| brutalist | Space_Mono | Work_Sans |
-| playful | Fredoka | Nunito |
-| luxury | Cormorant_Garamond | Montserrat |
-| retro | Righteous | Poppins |
-| geometric | Outfit | Inter |
-| humanist | Fraunces | Source_Sans_3 |
-| minimal | DM_Sans | DM_Sans |
-| bold | Bebas_Neue | Open_Sans |
-| elegant | Libre_Baskerville | Karla |
-
-### layout.tsx Template:
-\`\`\`tsx
-import type { Metadata } from 'next'
-import { Display_Font, Body_Font } from 'next/font/google'
-import './globals.css'
-const displayFont = Display_Font({ subsets: ['latin'], variable: '--font-display', weight: ['400', '700'] })
-const bodyFont = Body_Font({ subsets: ['latin'], variable: '--font-body', weight: ['400', '600'] })
-export const metadata: Metadata = { title: 'APP_NAME', description: 'APP_DESCRIPTION' }
-export default function RootLayout({ children }: { children: React.ReactNode }) {
-  return (
-    <html lang="en" className={\`\${displayFont.variable} \${bodyFont.variable}\`} suppressHydrationWarning>
-      <body className="min-h-screen bg-[--color-background] font-body antialiased" suppressHydrationWarning>{children}</body>
-    </html>
-  )
-}
-\`\`\`
-
-### globals.css Structure:
-\`\`\`css
-@import "tailwindcss";
-:root {
-  --font-display: 'DISPLAY_FONT', serif;
-  --font-body: 'BODY_FONT', sans-serif;
-  --color-primary: #______;
-  --color-accent: #______;
-  --color-background: #______;
-  --color-surface: #______;
-  --color-text: #______;
-  --color-muted: #______.
-}
-.dark { /* dark mode values */ }
-@custom-variant dark (&:where(.dark, .dark *));
-.font-display { font-family: var(--font-display); }
-.font-body { font-family: var(--font-body); }
-\`\`\`
-
-## SUPABASE (only if DATABASE section exists)
-→ Load "database-queries" and "rls-policies" skills for detailed patterns
-
-Files to create:
-1. lib/supabase.ts — client setup
-2. schema.sql — SQL for dashboard
-3. .env.local.example — template only
-
-**DO NOT create .env.local** — auto-provisioned.
-
-## CLIENT-ONLY PACKAGES (need dynamic import with ssr: false)
-These access browser APIs: phaser, pixi.js, three, @react-three/fiber, gsap, react-leaflet
-
-\`\`\`tsx
-'use client'
-import dynamic from 'next/dynamic'
-const Game = dynamic(() => import('@/components/Game'), { ssr: false })
-export default function GamePage() { return <Game /> }
-\`\`\`
-
-**SSR-SAFE packages** (import normally):
-recharts, @tremor/react, framer-motion, react-hook-form, zod, zustand, @tanstack/react-query, date-fns
 
 ## DO NOT:
 - Create docs except ONE README.md
