@@ -16,7 +16,7 @@ import { z } from "zod";
 import { validatePackageName, type SandboxActions } from "./tools";
 import type { AgentResult, ToolContext, ToolCall } from "./types";
 import { extractDesignTokens } from "../utils/design-tokens";
-import { TAILWIND_V4_RULES, FONT_RULES, DESIGN_SYSTEM_VARS, COMMON_CODE_RULES, validateGlobalsCss } from "../prompts/shared";
+import { validateGlobalsCss } from "../prompts";
 import { getSkillsMetadata, formatSkillsForPrompt, loadSkill } from "./skills";
 
 // Use Sonnet for better quality edits (Haiku loses code too often)
@@ -106,39 +106,16 @@ The following files are locked and CANNOT be written to. Any attempt will be rej
 
 If the user asks to modify these, explain WHY you can't and suggest the correct alternative.
 
-${TAILWIND_V4_RULES}
+## Skills — On-Demand Expertise
 
-${FONT_RULES}
-
-${DESIGN_SYSTEM_VARS}
-
-## Debugging Visual Issues
-
-When user says text is "not visible", "can't see", "invisible", or colors are wrong:
-
-1. **FIRST read globals.css** — check what CSS variables are defined
-2. **Check the component** — is it using hardcoded colors that clash with the background?
-3. **Fix using CSS variables** — replace hardcoded colors with \`text-[var(--color-text)]\`, \`bg-[var(--color-background)]\`, etc.
-4. **Common cause**: Component uses \`text-white\` on a white background, or \`text-black\` on a dark background. Fix by using the CSS variable instead.
-
-## Fixing Bugs
-When the user reports a bug:
-1. Think through the ROOT CAUSE — don't just patch symptoms
-2. Read ALL related files (the component, its parent, shared state, types)
-3. Trace the data flow: where does the state come from? How does it update?
-4. Fix the actual cause, not just the visible symptom
-5. Test mentally: does your fix handle all edge cases?
+When you receive a modification request, load the \`understand-request\` skill FIRST to classify the task and determine which other skills to load. Then load the recommended skills for detailed guidance before making changes.
 
 {ARCHITECTURE_CONTEXT}
 
 ## Project Stack
 
-- Next.js 14+ (App Router)
-- TypeScript
-- Tailwind CSS v4
-- shadcn/ui components (import from @/components/ui/*)
-
-${COMMON_CODE_RULES}
+- Next.js 14+ (App Router), TypeScript, Tailwind CSS v4, shadcn/ui
+- Load relevant skills for detailed patterns on these technologies.
 
 ## Current Project Files
 `;

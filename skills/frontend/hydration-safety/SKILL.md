@@ -149,6 +149,64 @@ For edge cases where content MUST differ (e.g., timestamps), use suppressHydrati
 </html>
 ```
 
+### useSyncExternalStore Error
+
+**"getServerSnapshot should be cached" error** means the code uses `useSyncExternalStore` incorrectly. **The fix is to REPLACE the custom store with standard React patterns:**
+
+```tsx
+// ❌ WRONG - causes SSR hydration error
+import { useSyncExternalStore } from 'react'
+const store = { state: [], listeners: new Set() }
+export function useStore() {
+  return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot)
+}
+
+// ✅ CORRECT - Replace with useState or Context
+'use client'
+import { useState, createContext, useContext } from 'react'
+
+// Option 1: Simple useState in component
+const [items, setItems] = useState(INITIAL_DATA)
+
+// Option 2: Context for shared state
+const StoreContext = createContext(null)
+export function StoreProvider({ children }) {
+  const [state, setState] = useState(INITIAL_STATE)
+  return <StoreContext.Provider value={{ state, setState }}>{children}</StoreContext.Provider>
+}
+export function useStore() {
+  return useContext(StoreContext)
+}
+```
+
+**When fixing this error:**
+1. Remove any useSyncExternalStore imports
+2. Remove custom subscribe/getSnapshot/getServerSnapshot functions
+3. Replace with useState or Context + useState pattern
+4. Update all components using the store to use the new pattern
+
+### Nested Interactive Elements
+
+Never put interactive elements inside each other — this causes hydration mismatches:
+
+```tsx
+// ❌ WRONG - nested interactive elements
+<a href="/page">
+  <button onClick={handleClick}>Click me</button>
+</a>
+
+// ❌ WRONG - button wrapping a link
+<button>
+  <a href="/page">Go to page</a>
+</button>
+
+// ✅ CORRECT - use one or the other
+<button onClick={() => router.push('/page')}>Go to page</button>
+
+// ✅ CORRECT - style link as button
+<a href="/page" className="bg-[var(--color-primary)] px-4 py-2 rounded">Go to page</a>
+```
+
 ### RULES CHECKLIST
 
 Before completing any component, verify:
@@ -157,3 +215,5 @@ Before completing any component, verify:
 - [ ] No window/localStorage/document access outside useEffect
 - [ ] All array IDs are deterministic (not random)
 - [ ] All shuffling/randomization happens in useEffect
+- [ ] No useSyncExternalStore (use useState or Context instead)
+- [ ] No nested interactive elements (<button> inside <a> or vice versa)
