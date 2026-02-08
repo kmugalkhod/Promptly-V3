@@ -295,4 +295,4 @@ If you see this error, the code uses useSyncExternalStore incorrectly. **Replace
 3. **NEVER create lib/store.ts with custom subscribe/getSnapshot patterns**
 4. **Context for shared state** — when 3+ components need same state
 5. **zustand ONLY if in PACKAGES** — handles SSR correctly
-6. **Always initialize state with data** — never empty arrays for lists
+6. **Initialize state correctly** — with demo data for static/non-DB components; with empty array `[]` + loading state for components that fetch from database (data loads via useEffect)

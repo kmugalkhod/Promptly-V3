@@ -17,9 +17,19 @@ agents: [coder, chat]
 
 Only use Supabase when architecture.md has a DATABASE section.
 
+### CRITICAL — schema.sql Generation
+
+⚠️ **MANDATORY**: When architecture.md has a DATABASE section, you MUST create `schema.sql` in the project root BEFORE any component files.
+
+- **schema.sql is the PRIMARY deliverable** — without it, the auto-execution pipeline has nothing to execute and the database will be empty. All CRUD operations will fail silently.
+- **Create schema.sql BEFORE `lib/supabase.ts`** — the schema defines what the client will query.
+- **Every table in the DATABASE section** MUST have a corresponding `CREATE TABLE IF NOT EXISTS` statement in schema.sql.
+
 ### File Setup
 
 **1. lib/supabase.ts - Client Setup:**
+
+⚠️ **CRITICAL: NEVER hardcode Supabase URL or anon key.** The URL and key MUST come from environment variables. NEVER use string literals like `'https://xxx.supabase.co'` or paste actual keys.
 
 ```typescript
 import { createClient } from '@supabase/supabase-js'
@@ -124,6 +134,8 @@ const { error } = await supabase
   .in('id', ['id1', 'id2', 'id3'])
 ```
 
+> DELETE operations require a matching DELETE RLS policy on the table. If delete fails silently, check that a DELETE policy exists in schema.sql.
+
 ### Data Fetching in Components
 
 Use 'use client' + useState + useEffect for fetching:
@@ -224,23 +236,97 @@ export function TodoList() {
 ### Error Handling Pattern
 
 ```typescript
-async function safeFetch() {
+async function safeFetch(tableName: string) {
   try {
     const { data, error } = await supabase
-      .from('todos')
+      .from(tableName)
       .select('*')
 
     if (error) {
-      console.error('Supabase error:', error)
+      console.error(`Error fetching from ${tableName}:`, error.message)
       return { data: null, error: error.message }
     }
 
     return { data, error: null }
   } catch (err) {
-    console.error('Unexpected error:', err)
+    console.error(`Unexpected error fetching from ${tableName}:`, err)
     return { data: null, error: 'An unexpected error occurred' }
   }
 }
+
+// User-facing error state pattern:
+// const [error, setError] = useState<string | null>(null)
+// if (error) return <div className="text-red-500">Error: {error}</div>
+```
+
+### Database Readiness Pattern
+
+schema.sql is auto-executed after code generation. During the brief window before execution completes, queries will fail with "relation does not exist" (code 42P01). Use this pattern to handle it gracefully:
+
+```tsx
+const [data, setData] = useState<Item[]>([])
+const [loading, setLoading] = useState(true)
+const [error, setError] = useState<string | null>(null)
+const [dbReady, setDbReady] = useState(true)
+
+async function fetchData() {
+  setLoading(true)
+  const { data, error } = await supabase
+    .from('items')
+    .select('*')
+    .order('created_at', { ascending: false })
+
+  if (error) {
+    if (error.code === '42P01') {
+      // Table doesn't exist yet — schema.sql is still being executed
+      setDbReady(false)
+      setTimeout(() => {
+        setDbReady(true)
+        fetchData()
+      }, 3000)
+      return
+    }
+    setError(error.message)
+  } else {
+    setData(data || [])
+    setDbReady(true)
+  }
+  setLoading(false)
+}
+
+useEffect(() => { fetchData() }, [])
+
+if (!dbReady) return <div className="text-center p-8 text-muted-foreground">Setting up database...</div>
+if (loading) return <div>Loading...</div>
+if (error) return <div className="text-red-500">Error: {error}</div>
+```
+
+Use this pattern in the PRIMARY data-fetching component (the one that loads on page mount). Secondary components that only write data (forms, buttons) don't need it — they'll work once the primary component confirms DB readiness.
+
+### Common Supabase Errors
+
+**Table not found (relation does not exist):**
+This means schema.sql hasn't been executed yet. The auto-execution pipeline handles this automatically. Use the Database Readiness Pattern above to retry automatically. If the error persists after 30 seconds, the user needs to run schema.sql manually in the Supabase SQL Editor.
+
+```typescript
+// Error: {message: 'relation "public.posts" does not exist', code: '42P01'}
+// FIX: Run schema.sql in Supabase SQL Editor
+```
+
+**RLS blocks access (new row violates policy):**
+This means your INSERT/UPDATE doesn't satisfy the WITH CHECK clause. Common cause: the user_id column doesn't match the authenticated user.
+
+```typescript
+// Error: {message: 'new row violates row-level security policy', code: '42501'}
+// FIX: Ensure user_id is set to auth.uid() value, or check RLS policies
+```
+
+**No rows returned (RLS filters everything):**
+Not an error — just empty results. This happens when SELECT policy filters out all rows (e.g., no published posts yet, or user has no data).
+
+```typescript
+// data will be [] — this is normal when no rows match the RLS policy
+// Show an empty state UI, not an error
 ```
 
 ### Real-time Subscriptions (if needed)
@@ -287,11 +373,51 @@ export function RealtimeTodos() {
 }
 ```
 
+### Column Consistency Rules
+
+Column names MUST be consistent across all layers:
+
+- Column names in CRUD operations (e.g., `supabase.from('todos').insert({ text: '...' })`) MUST exactly match columns in schema.sql (e.g., `text text NOT NULL`).
+- TypeScript interface fields MUST map 1:1 to schema.sql columns.
+- If architecture.md DATABASE section says `task` but your interface uses `text`, pick ONE name and use it everywhere: schema.sql, TypeScript interface, and all CRUD operations.
+
+```
+schema.sql:           text text NOT NULL
+TypeScript interface: text: string
+Insert operation:     .insert({ text: '...' })
+                      ^^^^  ^^^^  ^^^^  — ALL must match
+```
+
+### Initial State for DB-Backed Components
+
+When a component fetches data from Supabase, initialize state with empty array `[]` and show loading state. NEVER hardcode demo objects with fake IDs in useState — any CRUD operation on fake IDs will fail because they don't exist in the database.
+
+```tsx
+// ✅ CORRECT — empty initial state + loading + useEffect fetch
+const [todos, setTodos] = useState<Todo[]>([])
+const [loading, setLoading] = useState(true)
+
+useEffect(() => {
+  fetchTodos()
+}, [])
+
+// ❌ WRONG — fake IDs will crash on update/delete
+const [todos, setTodos] = useState([
+  { id: '1', text: 'Fake todo', completed: false }
+])
+```
+
 ### RULES
 
 1. **Only use when DATABASE section exists** in architecture.md
 2. **Never create .env.local** — it's auto-provisioned
 3. **Always create .env.local.example** — for documentation
 4. **Use 'use client' for data fetching** — with useState + useEffect
-5. **Handle errors gracefully** — check for error in response
+5. **Handle errors gracefully** — check for error in response. Show user-facing error state for errors, empty state UI for empty results (empty results from RLS filtering are normal, not errors)
 6. **Use optimistic updates** — update local state before confirming
+7. **ALWAYS create schema.sql FIRST** when DATABASE section exists — before any component files
+8. **NEVER hardcode Supabase URL or anon key** — always use process.env
+9. **Column names in code MUST match column names in schema.sql** exactly
+10. **Initialize DB-backed state with empty array `[]`** — data loads via useEffect, never fake demo objects
+11. **Handle "table not found" (42P01) gracefully** — schema.sql is auto-executed after code generation. Use the Database Readiness Pattern to show "Setting up database..." and auto-retry, not a raw error message
+12. **Column names in code MUST match schema.sql exactly** — if schema.sql says `created_at`, code must use `created_at` (not `createdAt`). If schema.sql says `user_id`, code must use `user_id` (not `userId`). TypeScript interfaces map 1:1 to SQL column names

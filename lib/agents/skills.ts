@@ -17,6 +17,7 @@ import type {
   SkillContent,
   SkillLoadResult,
 } from "./skills.types";
+import { SKILLS_BUNDLE } from "./skills-bundle";
 
 // Skills directory relative to project root
 const SKILLS_DIR = path.join(process.cwd(), "skills");
@@ -61,8 +62,8 @@ async function scanSkillsDirectory(dir: string): Promise<SkillMetadata[]> {
         }
       }
     }
-  } catch (error) {
-    console.warn(`[skills] Failed to scan directory ${dir}:`, error);
+  } catch {
+    // Expected in Convex cloud where skills/ directory doesn't exist
   }
 
   return skills;
@@ -80,8 +81,26 @@ export async function getSkillsMetadata(
     return skillsMetadataCache;
   }
 
+  // Try filesystem first (works in local dev)
   skillsMetadataCache = await scanSkillsDirectory(SKILLS_DIR);
-  console.log(`[skills] Loaded ${skillsMetadataCache.length} skills`);
+
+  if (skillsMetadataCache.length > 0) {
+    console.info(
+      `[skills] Loaded ${skillsMetadataCache.length} skills from filesystem`
+    );
+    return skillsMetadataCache;
+  }
+
+  // Fallback to bundle (Convex cloud, or filesystem unavailable)
+  skillsMetadataCache = Object.values(SKILLS_BUNDLE).map((s) => ({
+    name: s.name,
+    description: s.description,
+    category: s.category,
+    agents: s.agents as SkillMetadata["agents"],
+  }));
+  console.info(
+    `[skills] Loaded ${skillsMetadataCache.length} skills from bundle`
+  );
 
   return skillsMetadataCache;
 }
@@ -127,6 +146,7 @@ Use the load_skill tool to load full instructions when you need a skill's expert
 async function findAndLoadSkill(
   skillName: string
 ): Promise<SkillContent | null> {
+  // Try filesystem first (local dev)
   async function searchDirectory(dir: string): Promise<SkillContent | null> {
     try {
       const entries = await fs.readdir(dir, { withFileTypes: true });
@@ -167,7 +187,24 @@ async function findAndLoadSkill(
     return null;
   }
 
-  return searchDirectory(SKILLS_DIR);
+  const fsResult = await searchDirectory(SKILLS_DIR);
+  if (fsResult) return fsResult;
+
+  // Fallback to bundle
+  const bundled = SKILLS_BUNDLE[skillName];
+  if (bundled) {
+    return {
+      metadata: {
+        name: bundled.name,
+        description: bundled.description,
+        category: bundled.category,
+        agents: bundled.agents as SkillMetadata["agents"],
+      },
+      instructions: bundled.instructions,
+    };
+  }
+
+  return null;
 }
 
 /**

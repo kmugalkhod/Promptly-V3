@@ -22,6 +22,7 @@ export default defineSchema({
       v.literal("error")
     )),
     schemaError: v.optional(v.string()),
+    schemaTablesCreated: v.optional(v.number()), // Verified table count after health check
     architecture: v.optional(v.string()), // architecture.md content
     status: v.union(
       v.literal("new"),

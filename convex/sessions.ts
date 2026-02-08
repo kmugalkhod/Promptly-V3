@@ -59,6 +59,7 @@ export const update = mutation({
       v.literal("error")
     )),
     schemaError: v.optional(v.string()),
+    schemaTablesCreated: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
     const { id, ...updates } = args;
