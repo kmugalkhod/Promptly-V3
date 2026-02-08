@@ -149,6 +149,16 @@ export const initializeForSession = action({
     }
     console.log(`[initializeForSession] Restored ${restoredCount}/${files.length} files`);
 
+    // 7a. Restore .env.local with Supabase credentials if connected
+    const supabaseStatus = await ctx.runQuery(api.sessions.getSupabaseStatus, { id: args.sessionId });
+    if (supabaseStatus?.supabaseConnected && supabaseStatus?.supabaseUrl && supabaseStatus?.supabaseAnonKey) {
+      await sandbox.files.write(
+        `${PROJECT_DIR}/.env.local`,
+        `NEXT_PUBLIC_SUPABASE_URL=${supabaseStatus.supabaseUrl}\nNEXT_PUBLIC_SUPABASE_ANON_KEY=${supabaseStatus.supabaseAnonKey}\n`
+      );
+      console.log("[initializeForSession] Restored .env.local with Supabase credentials");
+    }
+
     // 7b. Run npm install to restore packages
     console.log(`[initializeForSession] Running npm install...`);
     try {
@@ -330,6 +340,16 @@ export const recreate = action({
 
     console.log(`Sandbox recreated: ${sandboxId}, restored ${restoredFiles} files`);
 
+    // Restore .env.local with Supabase credentials if connected
+    const supabaseStatus = await ctx.runQuery(api.sessions.getSupabaseStatus, { id: args.sessionId });
+    if (supabaseStatus?.supabaseConnected && supabaseStatus?.supabaseUrl && supabaseStatus?.supabaseAnonKey) {
+      await sandbox.files.write(
+        `${PROJECT_DIR}/.env.local`,
+        `NEXT_PUBLIC_SUPABASE_URL=${supabaseStatus.supabaseUrl}\nNEXT_PUBLIC_SUPABASE_ANON_KEY=${supabaseStatus.supabaseAnonKey}\n`
+      );
+      console.log("[recreate] Restored .env.local with Supabase credentials");
+    }
+
     // Run npm install to restore packages
     console.log(`[recreate] Running npm install...`);
     try {
@@ -488,6 +508,16 @@ export const extendTimeout = action({
         }
 
         console.log(`[extendTimeout] Sandbox recreated: ${newSandboxId}, restored ${restoredFiles} files`);
+
+        // Restore .env.local with Supabase credentials if connected
+        const supabaseStatus = await ctx.runQuery(api.sessions.getSupabaseStatus, { id: args.sessionId });
+        if (supabaseStatus?.supabaseConnected && supabaseStatus?.supabaseUrl && supabaseStatus?.supabaseAnonKey) {
+          await newSandbox.files.write(
+            `${PROJECT_DIR}/.env.local`,
+            `NEXT_PUBLIC_SUPABASE_URL=${supabaseStatus.supabaseUrl}\nNEXT_PUBLIC_SUPABASE_ANON_KEY=${supabaseStatus.supabaseAnonKey}\n`
+          );
+          console.log("[extendTimeout] Restored .env.local with Supabase credentials");
+        }
 
         // Run npm install to restore packages
         console.log(`[extendTimeout] Running npm install...`);
