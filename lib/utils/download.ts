@@ -40,11 +40,15 @@ function generateReadme(appName: string, files: FileToZip[], hasSupabase: boolea
 
   const supabaseStep = hasSupabase
     ? `
-2. Supabase is pre-configured:
-   - \`.env.local\` already contains your Supabase credentials
-   - Run \`schema.sql\` against your Supabase database if you haven't already
+2. Set up your Supabase database:
+   - Go to your [Supabase Dashboard](https://supabase.com/dashboard) → SQL Editor
+   - Open \`schema.sql\` from this project and run it to create the database tables
+   - This only needs to be done once
 
-3. Run the development server:
+3. Supabase credentials are pre-configured in \`.env.local\`.
+   If you need to update them, copy \`.env.local.example\` and fill in your values.
+
+4. Run the development server:
    \`\`\`bash
    npm run dev
    \`\`\``
@@ -66,7 +70,7 @@ function generateReadme(appName: string, files: FileToZip[], hasSupabase: boolea
    \`\`\`
 ${supabaseStep}
 
-${hasSupabase ? "4" : "3"}. Open [http://localhost:3000](http://localhost:3000) in your browser.
+${hasSupabase ? "5" : "3"}. Open [http://localhost:3000](http://localhost:3000) in your browser.
 
 ## Project Structure
 
@@ -107,6 +111,7 @@ export async function createProjectZip(
   if (supabaseCredentials) {
     const envLocal = `NEXT_PUBLIC_SUPABASE_URL=${supabaseCredentials.url}\nNEXT_PUBLIC_SUPABASE_ANON_KEY=${supabaseCredentials.anonKey}\n`;
     zip.file(".env.local", envLocal);
+    zip.file(".env.local.example", "NEXT_PUBLIC_SUPABASE_URL=your_supabase_url\nNEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key\n");
   }
 
   // Add generated README.md

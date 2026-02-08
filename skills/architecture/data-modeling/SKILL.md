@@ -29,6 +29,8 @@ DATABASE:
     - NEXT_PUBLIC_SUPABASE_ANON_KEY
 ```
 
+**IMPORTANT**: When this DATABASE section exists, the coder agent MUST produce a `schema.sql` file from this specification. The column names defined here will become both SQL column names and TypeScript interface field names.
+
 ### COLUMN TYPES (Supabase/PostgreSQL)
 | Type | Use For |
 |------|---------|
@@ -54,7 +56,22 @@ DATABASE:
    - Only add what's needed now
 
 4. PACKAGES required:
-   - Add `@supabase/supabase-js` and `@supabase/ssr` to PACKAGES section
+   - Add `@supabase/supabase-js` to PACKAGES section (omit `@supabase/ssr` unless auth is needed)
+
+5. schema.sql is MANDATORY:
+   - The coder agent MUST create `schema.sql` from this DATABASE specification
+   - Without schema.sql, the auto-execution pipeline has nothing to execute
+
+### Column Naming Guidance
+
+Column names in the DATABASE section become:
+1. SQL column names in `schema.sql` (e.g., `text text NOT NULL`)
+2. TypeScript interface fields (e.g., `text: string`)
+3. Supabase query parameters (e.g., `.insert({ text: '...' })`)
+
+Choose names that work as both SQL columns AND TypeScript fields. Prefer: `title`, `content`, `description`, `name`, `status`, `completed`.
+
+Avoid generic names like `data`, `value`, `item` that may conflict with JS keywords.
 
 ### WHEN NOT TO ADD DATABASE
 - Simple calculators, converters

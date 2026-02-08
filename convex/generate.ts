@@ -95,8 +95,8 @@ async function refreshTokenIfNeeded(
 
   if (!token) return null;
 
-  // If token not expired (with 5-minute buffer), use it
-  if (expiry && Date.now() < expiry - 5 * 60 * 1000) {
+  // If token not expired (with 2-minute buffer), use it
+  if (expiry && Date.now() < expiry - 2 * 60 * 1000) {
     return token;
   }
 
@@ -144,7 +144,106 @@ async function refreshTokenIfNeeded(
 }
 
 /**
+ * Schema error types for classification and user messaging.
+ */
+type SchemaErrorType = "auth" | "syntax" | "rate_limit" | "server" | "timeout" | "network" | "unknown";
+
+interface SchemaError {
+  type: SchemaErrorType;
+  userMessage: string;
+  retryable: boolean;
+  rawError: string;
+}
+
+/**
+ * Classify a schema execution error by HTTP status code and response text.
+ * Returns a structured error with user-actionable message.
+ */
+function classifySchemaError(statusCode: number, errorText: string): SchemaError {
+  const rawError = errorText.substring(0, 500);
+
+  // Try to parse JSON error message
+  let parsedMessage = errorText;
+  try {
+    const parsed = JSON.parse(errorText);
+    if (parsed.message) parsedMessage = parsed.message;
+  } catch {
+    // Not JSON — use raw text
+  }
+
+  if (statusCode === 401 || statusCode === 403) {
+    return {
+      type: "auth",
+      userMessage: "Your Supabase session expired. Please reconnect Supabase in Settings and regenerate.",
+      retryable: false,
+      rawError,
+    };
+  }
+
+  if (statusCode === 429) {
+    return {
+      type: "rate_limit",
+      userMessage: "Supabase API is busy. Please run schema.sql manually in the Supabase SQL Editor.",
+      retryable: true,
+      rawError,
+    };
+  }
+
+  if (statusCode >= 500) {
+    return {
+      type: "server",
+      userMessage: "Supabase server error. Please try again or run schema.sql manually in the Supabase SQL Editor.",
+      retryable: true,
+      rawError,
+    };
+  }
+
+  if (statusCode === 400) {
+    return {
+      type: "syntax",
+      userMessage: `SQL error in schema.sql: ${parsedMessage}. The generated schema may have an issue — try regenerating.`,
+      retryable: false,
+      rawError,
+    };
+  }
+
+  return {
+    type: "unknown",
+    userMessage: `${parsedMessage}. You may need to run schema.sql manually in the Supabase SQL Editor.`,
+    retryable: false,
+    rawError,
+  };
+}
+
+/**
+ * Classify a fetch/network error (when fetch itself throws).
+ */
+function classifySchemaFetchError(error: unknown): SchemaError {
+  const message = error instanceof Error ? error.message : String(error);
+
+  if (error instanceof Error && error.name === "AbortError") {
+    return {
+      type: "timeout",
+      userMessage: "Database setup timed out. Please run schema.sql manually in the Supabase SQL Editor.",
+      retryable: true,
+      rawError: message,
+    };
+  }
+
+  return {
+    type: "network",
+    userMessage: "Network error connecting to Supabase. Please check your connection and try again.",
+    retryable: true,
+    rawError: message,
+  };
+}
+
+/** Timeout for Management API fetch calls (30 seconds) */
+const SCHEMA_FETCH_TIMEOUT_MS = 30_000;
+
+/**
  * Execute schema.sql against Supabase with validation and retry logic.
+ * Uses exponential backoff with jitter, 30s fetch timeout, and error classification.
  * Updates session schemaStatus throughout the process.
  */
 async function executeSchemaWithRetry(
@@ -167,11 +266,16 @@ async function executeSchemaWithRetry(
   });
 
   try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), SCHEMA_FETCH_TIMEOUT_MS);
+
     const validateRes = await fetch(apiUrl, {
       method: "POST",
       headers,
       body: JSON.stringify({ query: schemaContent, read_only: true }),
+      signal: controller.signal,
     });
+    clearTimeout(timeoutId);
 
     if (!validateRes.ok) {
       const errText = await validateRes.text();
@@ -179,13 +283,14 @@ async function executeSchemaWithRetry(
       if (errText.includes("read-only transaction") || errText.includes("25006")) {
         console.warn("[executeSchema] Dry-run validation skipped: DDL not supported in read-only mode");
       } else {
-        // Genuine SQL syntax error — fail early
+        // Genuine SQL syntax error — fail early with classified error
+        const classified = classifySchemaError(validateRes.status, errText);
         await ctx.runMutation(api.sessions.update, {
           id: sessionId,
           schemaStatus: "error" as const,
-          schemaError: `Validation failed: ${errText}`,
+          schemaError: classified.userMessage,
         });
-        return { success: false, error: `SQL validation failed: ${errText}` };
+        return { success: false, error: classified.userMessage };
       }
     }
   } catch (e) {
@@ -193,22 +298,28 @@ async function executeSchemaWithRetry(
     console.warn("[executeSchema] Dry-run validation skipped:", e);
   }
 
-  // Step 2: Execute with retry (max 2 attempts)
+  // Step 2: Execute with retry (max 3 attempts, exponential backoff + jitter)
   await ctx.runMutation(api.sessions.update, {
     id: sessionId,
     schemaStatus: "executing" as const,
   });
 
-  const MAX_ATTEMPTS = 2;
-  let lastError = "";
+  const MAX_ATTEMPTS = 3;
+  const BASE_DELAY_MS = 1000;
+  let lastClassifiedError: SchemaError | null = null;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), SCHEMA_FETCH_TIMEOUT_MS);
+
       const res = await fetch(apiUrl, {
         method: "POST",
         headers,
         body: JSON.stringify({ query: schemaContent, read_only: false }),
+        signal: controller.signal,
       });
+      clearTimeout(timeoutId);
 
       if (res.ok) {
         await ctx.runMutation(api.sessions.update, {
@@ -217,31 +328,134 @@ async function executeSchemaWithRetry(
           schemaError: undefined,
         });
         console.log(`[executeSchema] Schema executed successfully (attempt ${attempt})`);
+
+        // Reload PostgREST schema cache so the JS client can see new tables immediately
+        try {
+          const reloadRes = await fetch(apiUrl, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ query: "NOTIFY pgrst, 'reload schema'", read_only: false }),
+          });
+          if (reloadRes.ok) {
+            console.log("[executeSchema] PostgREST schema cache reload triggered");
+          } else {
+            console.warn("[executeSchema] Schema cache reload failed (non-fatal):", await reloadRes.text());
+          }
+        } catch (e) {
+          console.warn("[executeSchema] Schema cache reload error (non-fatal):", e);
+        }
+
         return { success: true };
       }
 
-      lastError = await res.text();
-      console.error(`[executeSchema] Attempt ${attempt} failed: ${lastError}`);
+      const errText = await res.text();
+      lastClassifiedError = classifySchemaError(res.status, errText);
+      console.error(`[executeSchema] Attempt ${attempt} failed (${lastClassifiedError.type}): ${errText.substring(0, 200)}`);
 
-      if (attempt < MAX_ATTEMPTS) {
-        await new Promise(resolve => setTimeout(resolve, 2000));
+      // Skip remaining retries for non-retryable errors
+      if (!lastClassifiedError.retryable) {
+        break;
       }
     } catch (e) {
-      lastError = e instanceof Error ? e.message : String(e);
-      console.error(`[executeSchema] Attempt ${attempt} error: ${lastError}`);
+      lastClassifiedError = classifySchemaFetchError(e);
+      console.error(`[executeSchema] Attempt ${attempt} error (${lastClassifiedError.type}): ${lastClassifiedError.rawError}`);
 
-      if (attempt < MAX_ATTEMPTS) {
-        await new Promise(resolve => setTimeout(resolve, 2000));
+      // Skip remaining retries for non-retryable errors
+      if (!lastClassifiedError.retryable) {
+        break;
       }
+    }
+
+    // Exponential backoff with jitter before next attempt
+    if (attempt < MAX_ATTEMPTS) {
+      const delay = BASE_DELAY_MS * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 500);
+      console.log(`[executeSchema] Retrying in ${delay}ms...`);
+      await new Promise(resolve => setTimeout(resolve, delay));
     }
   }
 
+  const errorMessage = lastClassifiedError?.userMessage ?? "Unknown error during schema execution";
   await ctx.runMutation(api.sessions.update, {
     id: sessionId,
     schemaStatus: "error" as const,
-    schemaError: lastError,
+    schemaError: errorMessage,
   });
-  return { success: false, error: lastError };
+  return { success: false, error: errorMessage };
+}
+
+/**
+ * Verify that tables were actually created after schema execution.
+ * Queries information_schema.tables to get public table names.
+ * Gracefully degrades on failure — schema execution is still considered successful.
+ */
+async function verifySchemaHealthCheck(
+  ctx: { runMutation: typeof import("./_generated/server").action["prototype"]["runMutation"] },
+  sessionId: import("./_generated/dataModel").Id<"sessions">,
+  projectRef: string,
+  token: string,
+): Promise<{ success: boolean; tableCount: number; tables: string[]; error?: string }> {
+  const apiUrl = `https://api.supabase.com/v1/projects/${projectRef}/database/query`;
+  const healthCheckQuery = `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'`;
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), SCHEMA_FETCH_TIMEOUT_MS);
+
+    const res = await fetch(apiUrl, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ query: healthCheckQuery, read_only: true }),
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
+    if (!res.ok) {
+      const errText = await res.text();
+      console.warn(`[healthCheck] Query failed (${res.status}): ${errText.substring(0, 200)}`);
+      // Graceful degradation — don't fail the overall schema execution
+      return { success: true, tableCount: 0, tables: [], error: errText };
+    }
+
+    const data = await res.json();
+    // Supabase API returns array of row objects: [{"table_name": "posts"}, ...]
+    const tables: string[] = Array.isArray(data)
+      ? data.map((row: { table_name: string }) => row.table_name).filter(Boolean)
+      : [];
+
+    const tableCount = tables.length;
+    console.log(`[healthCheck] Found ${tableCount} public tables: ${tables.join(", ")}`);
+
+    // Update session with verified table count
+    await ctx.runMutation(api.sessions.update, {
+      id: sessionId,
+      schemaTablesCreated: tableCount,
+    });
+
+    if (tableCount === 0) {
+      // Schema executed but no tables found — likely a problem
+      await ctx.runMutation(api.sessions.update, {
+        id: sessionId,
+        schemaStatus: "error" as const,
+        schemaError: "Schema executed but no tables were created. The SQL may have errors — try regenerating.",
+      });
+      return {
+        success: false,
+        tableCount: 0,
+        tables: [],
+        error: "Schema executed but no tables were created. The SQL may have errors — try regenerating.",
+      };
+    }
+
+    return { success: true, tableCount, tables };
+  } catch (e) {
+    // Network/timeout error on health check — graceful degradation
+    const message = e instanceof Error ? e.message : String(e);
+    console.warn(`[healthCheck] Health check failed (non-fatal): ${message}`);
+    return { success: true, tableCount: 0, tables: [], error: message };
+  }
 }
 
 /** E2B template with Next.js 16 + Tailwind v4 + shadcn/ui */
@@ -763,7 +977,7 @@ export const generate = action({
       }
 
       // 7a. Auto-execute schema.sql if Supabase Management API is available
-      let schemaResult: { success: boolean; error?: string } | null = null;
+      let schemaResult: { success: boolean; error?: string; tableCount?: number } | null = null;
       if (hasSupabase && supabaseStatus?.supabaseAccessToken && supabaseStatus?.supabaseProjectRef) {
         const schemaContent = await sandboxActions.readFile("schema.sql");
         if (schemaContent?.trim()) {
@@ -777,6 +991,16 @@ export const generate = action({
               supabaseStatus.supabaseProjectRef,
               token,
             );
+
+            // Health check: verify tables actually exist
+            if (schemaResult.success) {
+              const healthCheck = await verifySchemaHealthCheck(ctx, sessionId, supabaseStatus.supabaseProjectRef, token);
+              if (!healthCheck.success) {
+                schemaResult = { success: false, error: healthCheck.error };
+              } else {
+                schemaResult.tableCount = healthCheck.tableCount;
+              }
+            }
           }
         }
       }
@@ -810,8 +1034,8 @@ export const generate = action({
       // 7c. Send schema execution result as chat message
       if (schemaResult) {
         const schemaMessage = schemaResult.success
-          ? "✅ Database tables created successfully."
-          : `⚠️ Schema execution failed: ${schemaResult.error}. You may need to run schema.sql manually in the Supabase SQL Editor.`;
+          ? `✅ Database ready: ${schemaResult.tableCount ?? 0} table${(schemaResult.tableCount ?? 0) === 1 ? "" : "s"} created successfully.`
+          : `⚠️ Database setup failed: ${schemaResult.error}`;
 
         await ctx.runMutation(api.messages.create, {
           sessionId,
@@ -829,6 +1053,12 @@ export const generate = action({
         "tailwind.config.ts",
         "tailwind.config.js",
         "package.json",
+        // Template config files (needed for export to run locally)
+        "next.config.ts",
+        "next.config.mjs",
+        "tsconfig.json",
+        "postcss.config.mjs",
+        "postcss.config.js",
       ];
 
       for (const filePath of keyFiles) {
@@ -1120,7 +1350,7 @@ export const modify = action({
           console.log("[modify] Executing updated schema.sql via Management API...");
           const token = await refreshTokenIfNeeded(ctx, sessionId, supabaseStatus);
           if (token) {
-            const schemaResult = await executeSchemaWithRetry(
+            let schemaResult = await executeSchemaWithRetry(
               ctx,
               sessionId,
               schemaContent,
@@ -1128,17 +1358,28 @@ export const modify = action({
               token,
             );
 
+            // Health check: verify tables actually exist
+            let tableCount = 0;
+            if (schemaResult.success) {
+              const healthCheck = await verifySchemaHealthCheck(ctx, sessionId, supabaseStatus.supabaseProjectRef, token);
+              if (!healthCheck.success) {
+                schemaResult = { success: false, error: healthCheck.error };
+              } else {
+                tableCount = healthCheck.tableCount;
+              }
+            }
+
             if (schemaResult.success) {
               await ctx.runMutation(api.messages.create, {
                 sessionId,
                 role: "assistant",
-                content: "✅ Database schema updated successfully.",
+                content: `✅ Database ready: ${tableCount} table${tableCount === 1 ? "" : "s"} updated successfully.`,
               });
             } else {
               await ctx.runMutation(api.messages.create, {
                 sessionId,
                 role: "assistant",
-                content: `⚠️ Schema update failed: ${schemaResult.error}. You may need to run schema.sql manually.`,
+                content: `⚠️ Database setup failed: ${schemaResult.error}`,
               });
             }
           }
@@ -1154,6 +1395,12 @@ export const modify = action({
         "tailwind.config.ts",
         "tailwind.config.js",
         "package.json",
+        // Template config files (needed for export to run locally)
+        "next.config.ts",
+        "next.config.mjs",
+        "tsconfig.json",
+        "postcss.config.mjs",
+        "postcss.config.js",
       ];
 
       for (const filePath of keyFiles) {

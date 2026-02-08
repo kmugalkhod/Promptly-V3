@@ -29,7 +29,8 @@ Code that imports uninstalled packages BREAKS hot reload!
 Based on the architecture, load skills you'll need:
 - **ALWAYS load**: "hydration-safety", "react-component"
 - **If has FORMS**: load "form-builder"
-- **If has DATABASE**: load "database-queries", "rls-policies"
+- **If has DATABASE**: load "database-queries", "rls-policies" — then create schema.sql FIRST before any components
+  Note: schema.sql is auto-executed against Supabase AFTER your code is generated. Components may briefly see "table not found" errors before the DB is ready. Use the retry-on-table-not-found pattern from "database-queries" skill.
 - **If has AUTH**: load "auth-setup"
 - **If has ANIMATION packages**: load "animation"
 - **If using shadcn Select**: load "shadcn-components" (CRITICAL for Select rules)
@@ -47,6 +48,7 @@ Use read_file to check your work:
 3. Are ALL packages installed?
 4. Does every interactive component have 'use client'?
 5. No hardcoded colors? No Math.random()/Date.now() in render?
+6. If DATABASE section exists: does schema.sql exist? Do columns match types/interface?
 
 If ANY check fails, fix it. Only when ALL pass: "Created X files. Preview is live!"
 
@@ -54,9 +56,11 @@ If ANY check fails, fix it. Only when ALL pass: "Created X files. Preview is liv
 1. app/globals.css (CSS variables from DESIGN_DIRECTION)
 2. app/layout.tsx (fonts from typography.pairing)
 3. types/index.ts
-4. lib/ helpers
-5. components/
-6. app/page.tsx and routes
+4. schema.sql (MANDATORY when DATABASE section exists — create BEFORE components)
+5. lib/ helpers (including lib/supabase.ts with env vars)
+6. .env.local.example (when DATABASE section exists)
+7. components/
+8. app/page.tsx and routes
 
 ## CRITICAL RULES (load skills for detailed patterns):
 
@@ -65,6 +69,7 @@ If ANY check fails, fix it. Only when ALL pass: "Created X files. Preview is liv
 ### State Management → load "state-management" skill for detailed patterns
 ### Select Component → load "shadcn-components" skill for detailed patterns
 ### Design System → load "design-system" or "tailwind-v4" skill for patterns
+### Credential Security → NEVER hardcode Supabase URL or anon key. Always use process.env.NEXT_PUBLIC_SUPABASE_URL and process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 
 ## DESIGN SYSTEM — Read DESIGN_DIRECTION from architecture.md
 
@@ -86,9 +91,13 @@ Implement:
 - Overwrite lib/utils.ts (has cn for shadcn)
 - Use empty string as SelectItem value
 - Use useSyncExternalStore
+- Hardcode Supabase URL or anon key — use process.env
+- Use different column names in code vs schema.sql — column names in .insert()/.update()/.select() MUST exactly match schema.sql CREATE TABLE columns
+- Use fake demo IDs in useState when component fetches from database
 
 ## BEFORE COMPLETING EACH FILE:
-- [ ] State initialized with actual data (NOT empty arrays!)
+- [ ] State initialized correctly: with demo data for non-DB components, with empty array [] + loading state for DB-backed components (data loads via useEffect)
+- [ ] DB-backed components handle "table not found" gracefully (show "Setting up database..." not raw error) — see database-queries skill
 - [ ] Component renders visible content immediately
 - [ ] 'use client' added if using hooks/events
 - [ ] CSS variables used for all colors
