@@ -1,4 +1,5 @@
-import { mutation, query } from "./_generated/server";
+import { mutation, query, internalMutation, internalQuery, action } from "./_generated/server";
+import { internal } from "./_generated/api";
 import { v } from "convex/values";
 
 // Create new session
@@ -21,7 +22,7 @@ export const get = query({
   },
 });
 
-// List all sessions
+// List recent sessions (bounded to prevent unbounded growth)
 export const list = query({
   args: {},
   handler: async (ctx) => {
@@ -29,12 +30,41 @@ export const list = query({
       .query("sessions")
       .withIndex("by_created")
       .order("desc")
-      .collect();
+      .take(50);
   },
 });
 
-// Update session
+// Client-facing update — limited to safe fields only
 export const update = mutation({
+  args: {
+    id: v.id("sessions"),
+    appName: v.optional(v.string()),
+    status: v.optional(
+      v.union(v.literal("new"), v.literal("active"), v.literal("archived"))
+    ),
+    supabaseUrl: v.optional(v.string()),
+    supabaseAnonKey: v.optional(v.string()),
+    supabaseConnected: v.optional(v.boolean()),
+    supabaseProjectRef: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const { id, ...updates } = args;
+    const session = await ctx.db.get(id);
+    if (!session) {
+      throw new Error("Session not found");
+    }
+    const cleanUpdates: Record<string, string | boolean | number> = {};
+    for (const [key, value] of Object.entries(updates)) {
+      if (value !== undefined) {
+        cleanUpdates[key] = value as string | boolean | number;
+      }
+    }
+    await ctx.db.patch(id, cleanUpdates);
+  },
+});
+
+// Internal update — for server-side use only (actions, other mutations)
+export const updateInternal = internalMutation({
   args: {
     id: v.id("sessions"),
     appName: v.optional(v.string()),
@@ -60,10 +90,18 @@ export const update = mutation({
     )),
     schemaError: v.optional(v.string()),
     schemaTablesCreated: v.optional(v.number()),
+    coderStatus: v.optional(v.union(
+      v.literal("generating"),
+      v.literal("validating"),
+      v.literal("fixing"),
+      v.literal("success"),
+      v.literal("error")
+    )),
+    coderRetryCount: v.optional(v.number()),
+    coderError: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const { id, ...updates } = args;
-    // Filter out undefined values
     const cleanUpdates: Record<string, string | boolean | number> = {};
     for (const [key, value] of Object.entries(updates)) {
       if (value !== undefined) {
@@ -126,8 +164,25 @@ export const getWithCounts = query({
   },
 });
 
-// Get Supabase connection status for a session
+// Get Supabase connection status for a session (public — no tokens)
 export const getSupabaseStatus = query({
+  args: { id: v.id("sessions") },
+  handler: async (ctx, args) => {
+    const session = await ctx.db.get(args.id);
+    if (!session) return null;
+    return {
+      supabaseUrl: session.supabaseUrl ?? null,
+      supabaseAnonKey: session.supabaseAnonKey ?? null,
+      supabaseConnected: session.supabaseConnected ?? false,
+      supabaseProjectRef: session.supabaseProjectRef ?? null,
+      schemaStatus: session.schemaStatus ?? null,
+      schemaError: session.schemaError ?? null,
+    };
+  },
+});
+
+// Internal query — returns full status including tokens (for server use)
+export const getSupabaseStatusInternal = internalQuery({
   args: { id: v.id("sessions") },
   handler: async (ctx, args) => {
     const session = await ctx.db.get(args.id);
@@ -143,5 +198,48 @@ export const getSupabaseStatus = query({
       schemaStatus: session.schemaStatus ?? null,
       schemaError: session.schemaError ?? null,
     };
+  },
+});
+
+// Action for client to store Supabase OAuth credentials
+export const connectSupabase = action({
+  args: {
+    sessionId: v.id("sessions"),
+    supabaseUrl: v.string(),
+    supabaseAnonKey: v.string(),
+    supabaseProjectRef: v.string(),
+    accessToken: v.string(),
+    refreshToken: v.optional(v.string()),
+    expiresIn: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    await ctx.runMutation(internal.sessions.updateInternal, {
+      id: args.sessionId,
+      supabaseUrl: args.supabaseUrl,
+      supabaseAnonKey: args.supabaseAnonKey,
+      supabaseConnected: true,
+      supabaseProjectRef: args.supabaseProjectRef,
+      supabaseAccessToken: args.accessToken,
+      ...(args.refreshToken ? { supabaseRefreshToken: args.refreshToken } : {}),
+      ...(args.expiresIn ? { supabaseTokenExpiry: Date.now() + args.expiresIn * 1000 } : {}),
+    });
+  },
+});
+
+// Action for client to clear Supabase credentials
+export const disconnectSupabase = action({
+  args: {
+    sessionId: v.id("sessions"),
+  },
+  handler: async (ctx, args) => {
+    await ctx.runMutation(internal.sessions.updateInternal, {
+      id: args.sessionId,
+      supabaseUrl: "",
+      supabaseAnonKey: "",
+      supabaseConnected: false,
+      supabaseAccessToken: "",
+      supabaseProjectRef: "",
+      supabaseRefreshToken: "",
+    });
   },
 });

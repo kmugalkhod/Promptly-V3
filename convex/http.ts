@@ -3,6 +3,7 @@ import { httpAction } from "./_generated/server";
 import { internal, api } from "./_generated/api";
 
 const http = httpRouter();
+const allowedOrigin = process.env.ALLOWED_ORIGIN || "*";
 
 /**
  * Chat endpoint with streaming
@@ -25,12 +26,46 @@ http.route({
   method: "POST",
   handler: httpAction(async (ctx, request) => {
     // 1. Parse request
-    const { sessionId, message, useUnifiedPipeline } = await request.json();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let sessionId: any, message: any;
+    try {
+      const body = await request.json();
+      sessionId = body.sessionId;
+      message = body.message;
+    } catch {
+      return new Response(
+        JSON.stringify({ error: "Invalid JSON in request body" }),
+        { status: 400, headers: { "Content-Type": "application/json" } }
+      );
+    }
 
     if (!sessionId || !message) {
       return new Response(
         JSON.stringify({ error: "sessionId and message are required" }),
         { status: 400, headers: { "Content-Type": "application/json" } }
+      );
+    }
+
+    if (message.length > 100_000) {
+      return new Response(
+        JSON.stringify({ error: "Message exceeds maximum length (100KB)" }),
+        { status: 400, headers: { "Content-Type": "application/json" } }
+      );
+    }
+
+    // 1b. Validate session exists
+    try {
+      const session = await ctx.runQuery(api.sessions.get, { id: sessionId });
+      if (!session) {
+        return new Response(
+          JSON.stringify({ error: "Invalid session" }),
+          { status: 401, headers: { "Content-Type": "application/json" } }
+        );
+      }
+    } catch {
+      return new Response(
+        JSON.stringify({ error: "Invalid session" }),
+        { status: 401, headers: { "Content-Type": "application/json" } }
       );
     }
 
@@ -173,7 +208,7 @@ http.route({
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache",
         Connection: "keep-alive",
-        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Origin": allowedOrigin,
       },
     });
   }),
@@ -187,9 +222,9 @@ http.route({
     return new Response(null, {
       status: 204,
       headers: {
-        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Origin": allowedOrigin,
         "Access-Control-Allow-Methods": "POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization",
       },
     });
   }),
@@ -213,7 +248,7 @@ http.route({
         status: 200,
         headers: {
           "Content-Type": "application/json",
-          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Origin": allowedOrigin,
         },
       }
     );

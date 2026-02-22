@@ -32,15 +32,44 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
 
 ### Supabase Client with Auth
 
-**lib/supabase.ts:**
+Auth apps use the SAME two-file client setup as the `database-queries` skill:
 
+**lib/supabase/client.ts** — for Client Components ('use client'):
 ```typescript
-import { createClient } from '@supabase/supabase-js'
+import { createBrowserClient } from '@supabase/ssr'
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+export function createClient() {
+  return createBrowserClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  )
+}
+```
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey)
+**lib/supabase/server.ts** — for Server Components, Route Handlers, Server Actions:
+```typescript
+import { createServerClient } from '@supabase/ssr'
+import { cookies } from 'next/headers'
+
+export async function createClient() {
+  const cookieStore = await cookies()
+  return createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        getAll() { return cookieStore.getAll() },
+        setAll(cookiesToSet) {
+          try {
+            cookiesToSet.forEach(({ name, value, options }) =>
+              cookieStore.set(name, value, options)
+            )
+          } catch { /* Server Components can't write cookies — middleware handles it */ }
+        },
+      },
+    }
+  )
+}
 ```
 
 ### Auth Hook Pattern
@@ -50,26 +79,24 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey)
 'use client'
 
 import { useState, useEffect } from 'react'
-import { User, Session } from '@supabase/supabase-js'
-import { supabase } from '@/lib/supabase'
+import { User } from '@supabase/supabase-js'
+import { createClient } from '@/lib/supabase/client'
 
 export function useAuth() {
   const [user, setUser] = useState<User | null>(null)
-  const [session, setSession] = useState<Session | null>(null)
   const [loading, setLoading] = useState(true)
+  const supabase = createClient()
 
   useEffect(() => {
-    // Get initial session
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session)
-      setUser(session?.user ?? null)
+    // Get initial user — use getUser() NOT getSession()
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      setUser(user)
       setLoading(false)
     })
 
     // Listen for auth changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (_event, session) => {
-        setSession(session)
         setUser(session?.user ?? null)
         setLoading(false)
       }
@@ -78,7 +105,7 @@ export function useAuth() {
     return () => subscription.unsubscribe()
   }, [])
 
-  return { user, session, loading }
+  return { user, loading }
 }
 ```
 
@@ -90,13 +117,14 @@ export function useAuth() {
 'use client'
 
 import { useState } from 'react'
-import { supabase } from '@/lib/supabase'
+import { createClient } from '@/lib/supabase/client'
 
 export function AuthForm() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const supabase = createClient()
 
   async function handleSignUp() {
     setLoading(true)
@@ -165,9 +193,11 @@ export function AuthForm() {
 ```tsx
 'use client'
 
-import { supabase } from '@/lib/supabase'
+import { createClient } from '@/lib/supabase/client'
 
 export function OAuthButtons() {
+  const supabase = createClient()
+
   async function signInWithGoogle() {
     await supabase.auth.signInWithOAuth({
       provider: 'google',
@@ -201,29 +231,115 @@ export function OAuthButtons() {
 
 ### OAuth Callback Route
 
-**app/auth/callback/route.ts:**
+**app/auth/callback/route.ts** — MUST use server client (cookies required for session):
 
 ```typescript
+import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
-import { supabase } from '@/lib/supabase'
 
 export async function GET(request: Request) {
-  const requestUrl = new URL(request.url)
-  const code = requestUrl.searchParams.get('code')
+  const { searchParams, origin } = new URL(request.url)
+  const code = searchParams.get('code')
+  const next = searchParams.get('next') ?? '/'
 
   if (code) {
-    await supabase.auth.exchangeCodeForSession(code)
+    const supabase = await createClient()
+    const { error } = await supabase.auth.exchangeCodeForSession(code)
+    if (!error) {
+      return NextResponse.redirect(`${origin}${next}`)
+    }
   }
-
-  // Redirect to home page after successful auth
-  return NextResponse.redirect(new URL('/', requestUrl.origin))
+  return NextResponse.redirect(`${origin}/auth/auth-code-error`)
 }
 ```
+
+### Middleware (REQUIRED for Auth Apps)
+
+Create `middleware.ts` in the project root. This refreshes expired auth tokens on every request — without it, users get randomly logged out.
+
+```typescript
+// middleware.ts
+import { createServerClient } from '@supabase/ssr'
+import { NextResponse, type NextRequest } from 'next/server'
+
+export async function middleware(request: NextRequest) {
+  let supabaseResponse = NextResponse.next({ request })
+
+  const supabase = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        getAll() { return request.cookies.getAll() },
+        setAll(cookiesToSet) {
+          cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value))
+          supabaseResponse = NextResponse.next({ request })
+          cookiesToSet.forEach(({ name, value, options }) =>
+            supabaseResponse.cookies.set(name, value, options)
+          )
+        },
+      },
+    }
+  )
+
+  // CRITICAL: Do NOT run any code between createServerClient and getUser()
+  const { data: { user } } = await supabase.auth.getUser()
+
+  // Redirect unauthenticated users from protected routes
+  if (!user && !request.nextUrl.pathname.startsWith('/login') && !request.nextUrl.pathname.startsWith('/auth') && request.nextUrl.pathname !== '/') {
+    const url = request.nextUrl.clone()
+    url.pathname = '/login'
+    return NextResponse.redirect(url)
+  }
+
+  return supabaseResponse
+}
+
+export const config = {
+  matcher: ['/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)'],
+}
+```
+
+### User Profiles Table (REQUIRED)
+
+The `auth.users` table is NOT accessible via PostgREST. Create a `profiles` table in schema.sql for any user data you need in queries:
+
+```sql
+CREATE TABLE IF NOT EXISTS profiles (
+  id uuid PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  created_at timestamptz DEFAULT now(),
+  display_name text,
+  avatar_url text,
+  email text
+);
+
+ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
+
+-- Anyone can view profiles
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'profiles' AND policyname = 'Public profiles') THEN
+  CREATE POLICY "Public profiles" ON profiles FOR SELECT USING (true);
+END IF; END $$;
+
+-- Users can update their own profile
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'profiles' AND policyname = 'Users update own profile') THEN
+  CREATE POLICY "Users update own profile" ON profiles FOR UPDATE TO authenticated USING ((select auth.uid()) = id);
+END IF; END $$;
+
+-- Users can insert their own profile
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'profiles' AND policyname = 'Users insert own profile') THEN
+  CREATE POLICY "Users insert own profile" ON profiles FOR INSERT TO authenticated WITH CHECK ((select auth.uid()) = id);
+END IF; END $$;
+```
+
+Use this table for all joins where you need user info (display name, avatar, etc.) instead of trying to join `auth.users`.
 
 ### Sign Out
 
 ```tsx
+import { createClient } from '@/lib/supabase/client'
+
 async function signOut() {
+  const supabase = createClient()
   await supabase.auth.signOut()
   // User state will update via onAuthStateChange listener
 }
@@ -266,10 +382,11 @@ export function ProtectedPage({ children }: { children: React.ReactNode }) {
 'use client'
 
 import { useAuth } from '@/hooks/useAuth'
-import { supabase } from '@/lib/supabase'
+import { createClient } from '@/lib/supabase/client'
 
 export function UserProfile() {
   const { user, loading } = useAuth()
+  const supabase = createClient()
 
   if (loading) return <div>Loading...</div>
 
@@ -296,3 +413,8 @@ export function UserProfile() {
 4. **Handle loading state** — don't flash content during auth check
 5. **Redirect after OAuth** — use redirectTo option
 6. **Store user data in separate table** — don't rely only on auth.users
+7. **ALWAYS use getUser(), NEVER getSession()** — getSession() doesn't revalidate the auth token on the server
+8. **Create middleware.ts** for every auth app — refreshes tokens, protects routes
+9. **Create profiles table** in schema.sql — auth.users is NOT queryable via PostgREST
+10. **NEVER put code between createServerClient and getUser()** in middleware — causes random logouts
+11. **Cookie methods: ONLY use getAll/setAll** — never use individual get/set/remove

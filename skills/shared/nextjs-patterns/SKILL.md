@@ -30,7 +30,7 @@ agents: [all]
 | playful | Fredoka | Nunito |
 | luxury | Cormorant_Garamond | Montserrat |
 | retro | Righteous | Poppins |
-| geometric | Outfit | Inter |
+| geometric | Outfit | Space_Grotesk |
 | humanist | Fraunces | Source_Sans_3 |
 | minimal | DM_Sans | DM_Sans |
 | bold | Bebas_Neue | Open_Sans |
@@ -51,7 +51,7 @@ export const metadata: Metadata = { title: 'APP_NAME', description: 'APP_DESCRIP
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={`${displayFont.variable} ${bodyFont.variable}`} suppressHydrationWarning>
-      <body className="min-h-screen bg-[--color-background] font-body antialiased" suppressHydrationWarning>
+      <body className="min-h-screen bg-background font-body antialiased" suppressHydrationWarning>
         {children}
       </body>
     </html>
@@ -61,14 +61,18 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
 ### File Creation Order (MANDATORY)
 
-When creating a new project or feature, follow this exact order:
+When creating a new project, follow this exact order:
 
-1. **app/globals.css** — CSS variables from DESIGN_DIRECTION
-2. **app/layout.tsx** — fonts from typography.pairing
-3. **types/index.ts** — TypeScript types and interfaces
-4. **lib/** — helper functions and utilities
-5. **components/** — React components
-6. **app/page.tsx and routes** — pages and API routes
+1. **schema.sql** — Database schema (if architecture.md has DATABASE section). MUST be first.
+2. **app/globals.css** — CSS variables from DESIGN_DIRECTION
+3. **app/layout.tsx** — fonts from typography.pairing
+4. **lib/utils.ts** — cn() utility function (required by all UI components)
+5. **components/ui/*.tsx** — UI primitives (button, card, input, label, etc.). Only create files for components actually imported by your pages/components.
+6. **types/index.ts** — TypeScript types and interfaces (mirror schema.sql columns)
+7. **lib/supabase.ts** — Supabase client (if DATABASE section exists)
+8. **hooks/** — Custom hooks (e.g., useAuth.ts)
+9. **components/** — App-specific React components
+10. **app/page.tsx and ALL route pages** — Every route from architecture.md ROUTES section MUST have a corresponding `app/**/page.tsx` file
 
 This order prevents import errors — each file only depends on files created before it.
 
@@ -108,3 +112,6 @@ Before completing any layout or app structure, verify:
 - [ ] No `'use client'` + async combination
 - [ ] shadcn/ui imports use `@/components/ui/` path
 - [ ] No nested interactive elements (`<button>` inside `<a>` or vice versa)
+- [ ] lib/utils.ts created with cn() before any components/ui/ files
+- [ ] Every UI component imported in code has a corresponding components/ui/{name}.tsx file
+- [ ] Every route listed in architecture.md ROUTES has a corresponding app/**/page.tsx file

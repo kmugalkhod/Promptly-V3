@@ -42,9 +42,11 @@ export function MessageInput({
           className="w-full px-4 py-3 pr-12 bg-zinc-900 border border-zinc-800 rounded-xl text-sm text-white placeholder-zinc-500 resize-none focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent disabled:opacity-50 disabled:cursor-not-allowed"
         />
         <button
+          type="button"
           onClick={handleSubmit}
           disabled={!input.trim() || disabled}
           className="absolute right-3 bottom-3 p-2 bg-violet-600 hover:bg-violet-500 disabled:bg-zinc-700 disabled:cursor-not-allowed rounded-lg transition-colors"
+          aria-label="Send message"
         >
           <Send className="w-4 h-4 text-white" />
         </button>

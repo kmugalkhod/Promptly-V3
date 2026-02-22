@@ -7,7 +7,17 @@ const SUPABASE_OAUTH_TOKEN_URL = "https://api.supabase.com/v1/oauth/token";
  * Runs server-side so the client secret is never exposed.
  */
 export async function POST(request: NextRequest) {
-  const { refresh_token } = await request.json();
+  let requestBody;
+  try {
+    requestBody = await request.json();
+  } catch {
+    return NextResponse.json(
+      { error: "Invalid JSON in request body" },
+      { status: 400 }
+    );
+  }
+
+  const { refresh_token } = requestBody;
 
   if (!refresh_token) {
     return NextResponse.json(
@@ -49,6 +59,17 @@ export async function POST(request: NextRequest) {
   }
 
   const data = await response.json();
+
+  if (
+    typeof data.access_token !== "string" ||
+    typeof data.refresh_token !== "string" ||
+    typeof data.expires_in !== "number"
+  ) {
+    return NextResponse.json(
+      { error: "Unexpected token response format from Supabase" },
+      { status: 502 }
+    );
+  }
 
   return NextResponse.json({
     access_token: data.access_token,

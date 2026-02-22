@@ -24,24 +24,26 @@ agents: [chat]
 
 | Symptom | Likely Cause | Fix |
 |---------|-------------|-----|
-| Text invisible | Hardcoded color matches background | Use `text-[var(--color-text)]` |
-| Button text gone | `text-white` on light bg | Use `text-[var(--color-primary)]` or ensure bg is dark |
-| Card invisible | No background set | Add `bg-[var(--color-surface)]` |
+| Text invisible | Hardcoded color matches background | Use `text-foreground` |
+| Button text gone | `text-white` on light bg | Use `text-primary` or ensure bg is dark |
+| Card invisible | No background set | Add `bg-card` |
 | Dark mode broken | Only light mode colors | Add `.dark` CSS variables in globals.css |
-| Icon not showing | Wrong color on background | Use `text-[var(--color-text)]` |
+| Icon not showing | Wrong color on background | Use `text-foreground` |
 
-### CSS Variable Reference
+### Tailwind Theme Class Reference
 
-Always read globals.css to see actual values, then use these patterns:
+Always read globals.css to see actual values, then use these Tailwind theme classes:
 ```
-text-[var(--color-text)]        — main text (adapts to theme)
-text-[var(--color-muted)]       — secondary text
-text-[var(--color-primary)]     — accent/link text
-bg-[var(--color-background)]    — page background
-bg-[var(--color-surface)]       — card/section background
-bg-[var(--color-primary)]       — accent background
-border-[var(--color-primary)]   — accent borders
+text-foreground       — main text (adapts to theme)
+text-muted-foreground — secondary text
+text-primary          — accent/link text
+bg-background         — page background
+bg-card               — card/section background
+bg-primary            — accent background
+border-primary        — accent borders
 ```
+
+**NEVER use explicit CSS variable syntax** (e.g., `bg-[var(--varname)]`). Use the Tailwind theme classes above.
 
 ### Dark Mode Debugging
 

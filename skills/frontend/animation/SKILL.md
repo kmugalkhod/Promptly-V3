@@ -47,11 +47,11 @@ Match the `motion_level` from architecture.md DESIGN_DIRECTION:
 
 ```tsx
 // Standard card with hover
-<div className="bg-[var(--color-surface)] rounded-xl p-6 shadow-md
+<div className="bg-card rounded-xl p-6 shadow-md
                transition-all duration-300
                hover:shadow-lg hover:scale-[1.02] hover:-translate-y-1">
-  <h3 className="font-display text-xl text-[var(--color-text)]">Title</h3>
-  <p className="text-[var(--color-muted)]">Description</p>
+  <h3 className="font-display text-xl text-foreground">Title</h3>
+  <p className="text-muted-foreground">Description</p>
 </div>
 ```
 
@@ -59,16 +59,16 @@ Match the `motion_level` from architecture.md DESIGN_DIRECTION:
 
 ```tsx
 // Primary button with lift effect
-<button className="px-6 py-3 bg-[var(--color-primary)] text-white rounded-lg font-semibold
+<button className="px-6 py-3 bg-primary text-white rounded-lg font-semibold
                    shadow-lg transition-all duration-200
                    hover:shadow-xl hover:scale-105">
   Get Started
 </button>
 
 // Ghost button with background fill
-<button className="px-6 py-3 border border-[var(--color-primary)] text-[var(--color-primary)] rounded-lg
+<button className="px-6 py-3 border border-primary text-primary rounded-lg
                    transition-all duration-200
-                   hover:bg-[var(--color-primary)] hover:text-white">
+                   hover:bg-primary hover:text-white">
   Learn More
 </button>
 ```
@@ -150,17 +150,17 @@ export default function Page() {
 
 ```tsx
 // Spinner animation
-<div className="animate-spin h-8 w-8 border-4 border-[var(--color-primary)] border-t-transparent rounded-full" />
+<div className="animate-spin h-8 w-8 border-4 border-primary border-t-transparent rounded-full" />
 
 // Pulse skeleton
-<div className="animate-pulse bg-[var(--color-muted)]/20 rounded-lg h-24" />
+<div className="animate-pulse bg-muted/20 rounded-lg h-24" />
 
 // Bounce indicator
 <div className="flex gap-1">
   {[0, 1, 2].map(i => (
     <div
       key={i}
-      className="w-2 h-2 bg-[var(--color-primary)] rounded-full animate-bounce"
+      className="w-2 h-2 bg-primary rounded-full animate-bounce"
       style={{ animationDelay: `${i * 0.1}s` }}
     />
   ))}
@@ -171,13 +171,13 @@ export default function Page() {
 
 ```tsx
 // Focus ring for keyboard navigation
-<button className="focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)] focus:ring-offset-2
+<button className="focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2
                    transition-all duration-200">
   Accessible Button
 </button>
 
 // Focus within for form groups
-<div className="focus-within:ring-2 focus-within:ring-[var(--color-primary)] rounded-lg p-2">
+<div className="focus-within:ring-2 focus-within:ring-primary rounded-lg p-2">
   <input className="outline-none" />
 </div>
 ```
@@ -191,13 +191,13 @@ export default function Page() {
 </button>
 
 // Link underline animation
-<a className="relative after:absolute after:bottom-0 after:left-0 after:h-0.5 after:w-0 after:bg-[var(--color-primary)]
+<a className="relative after:absolute after:bottom-0 after:left-0 after:h-0.5 after:w-0 after:bg-primary
               after:transition-all after:duration-200 hover:after:w-full">
   Learn More
 </a>
 
 // Color transition
-<div className="bg-[var(--color-surface)] transition-colors duration-200 hover:bg-[var(--color-primary)]/10">
+<div className="bg-card transition-colors duration-200 hover:bg-primary/10">
   Hoverable area
 </div>
 ```

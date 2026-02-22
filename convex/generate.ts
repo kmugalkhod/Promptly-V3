@@ -12,22 +12,27 @@
 
 import { v } from "convex/values";
 import { action } from "./_generated/server";
-import { api } from "./_generated/api";
+import { internal, api } from "./_generated/api";
 import { Sandbox } from "e2b";
 
 import {
   runArchitectureAgent,
   runCoderAgent,
   runChatAgent,
+  runSchemaAgent,
   type ToolContext,
   type SandboxActions,
 } from "../lib/agents";
 import { deriveAppName, extractAppNameFromArchitecture } from "../lib/utils/app-name";
 import { extractDesignTokens, formatDesignTokensForCoder } from "../lib/utils/design-tokens";
+import { extractDatabaseSection } from "../lib/utils/database-extraction";
 import { validateAndFixDesign } from "../lib/utils/design-validation";
 import { validateGeneratedCode } from "../lib/utils/code-validation";
+import { validateCoderOutput } from "../lib/utils/coder-validation";
+import { formatCoderRetryPrompt } from "../lib/prompts";
 import { extractPackagesFromArchitecture } from "../lib/utils/package-extraction";
 import { SandboxErrorType, type SandboxError } from "../lib/sandbox/types";
+import { KEY_FILES, PROJECT_DIR, TEMPLATE, SANDBOX_CONFIG, TEMPLATE_CLEANUP_FILES } from "./constants";
 
 // ============================================================================
 // Simple Request Classification (from reference code)
@@ -46,20 +51,6 @@ function isNewProjectRequest(message: string): boolean {
   return keywords.some((kw) => messageLower.includes(kw));
 }
 
-/**
- * Check if message requires architectural changes (recommend full rebuild)
- */
-function isBigChangeRequest(message: string): boolean {
-  const keywords = [
-    "authentication", "auth", "login", "signup", "register",
-    "payment", "stripe", "checkout",
-    "new page", "add page", "create page", "new route",
-    "database", "backend", "api endpoint",
-    "restructure", "rebuild", "redesign completely",
-  ];
-  const messageLower = message.toLowerCase();
-  return keywords.some((kw) => messageLower.includes(kw));
-}
 
 /**
  * Check if message implies the app needs database/data persistence
@@ -73,6 +64,66 @@ function needsDatabaseIntegration(message: string): boolean {
   ];
   const messageLower = message.toLowerCase();
   return keywords.some((kw) => messageLower.includes(kw));
+}
+
+// ============================================================================
+// Architecture Complexity Estimation
+// ============================================================================
+
+/**
+ * Complexity levels for architecture-based resource scaling.
+ * Determines coder agent recursion limits and fix-mode budgets.
+ */
+type ArchitectureComplexity = "simple" | "moderate" | "complex";
+
+/**
+ * Recursion limits for the coder agent based on architecture complexity.
+ * Initial: budget for first generation pass.
+ * Fix: budget for self-healing fix attempts (lower since they're targeted).
+ */
+const CODER_RECURSION_LIMITS: Record<ArchitectureComplexity, { initial: number; fix: number }> = {
+  simple: { initial: 150, fix: 50 },
+  moderate: { initial: 200, fix: 75 },
+  complex: { initial: 300, fix: 100 },
+};
+
+/**
+ * Estimate architecture complexity by analyzing the architecture document.
+ * Uses heuristics based on table count, route count, auth presence,
+ * and component count to classify the app.
+ *
+ * Complex: 5+ tables, or 8+ routes, or auth + 3+ tables
+ * Moderate: 2+ tables, or 4+ routes, or has auth
+ * Simple: everything else (landing pages, simple UIs)
+ */
+function estimateArchitectureComplexity(architecture: string): ArchitectureComplexity {
+  const text = architecture.toLowerCase();
+
+  // Count database tables (look for table definitions in DATABASE section)
+  const tableMatches = text.match(/\btable\b[:\s]+\w+|\bcreate\s+table\b|\|\s*\w+\s*\|.*\bpk\b/gi);
+  const tableCount = tableMatches ? tableMatches.length : 0;
+
+  // Count routes (look for route paths like /dashboard, /settings, /[id])
+  const routeSection = architecture.match(/routes?[:\s]*\n([\s\S]*?)(?=\n##|\n---|\Z)/i);
+  const routeText = routeSection ? routeSection[1] : architecture;
+  const routeMatches = routeText.match(/\/[\w[\]-]+/g);
+  const routeCount = routeMatches ? new Set(routeMatches).size : 0;
+
+  // Check for auth
+  const hasAuth = /\bauth\b|authentication|login\s+page|signup|sign.?up|oauth/i.test(text);
+
+  // Count components (look for component names in COMPONENTS section)
+  const componentMatches = text.match(/component[:\s]+\w+|\b\w+(?:page|form|list|card|modal|dialog|sidebar|header|nav)\b/gi);
+  const componentCount = componentMatches ? new Set(componentMatches).size : 0;
+
+  // Classification logic
+  if (tableCount >= 5 || routeCount >= 8 || componentCount >= 15 || (hasAuth && tableCount >= 3)) {
+    return "complex";
+  }
+  if (tableCount >= 2 || routeCount >= 4 || componentCount >= 8 || hasAuth) {
+    return "moderate";
+  }
+  return "simple";
 }
 
 /**
@@ -124,7 +175,17 @@ async function refreshTokenIfNeeded(
 
     if (res.ok) {
       const data = await res.json();
-      await ctx.runMutation(api.sessions.update, {
+
+      if (
+        typeof data.access_token !== "string" ||
+        typeof data.refresh_token !== "string" ||
+        typeof data.expires_in !== "number"
+      ) {
+        console.error("[refreshTokenIfNeeded] Invalid token response shape:", Object.keys(data));
+        return token;
+      }
+
+      await ctx.runMutation(internal.sessions.updateInternal, {
         id: sessionId,
         supabaseAccessToken: data.access_token,
         supabaseRefreshToken: data.refresh_token,
@@ -260,7 +321,7 @@ async function executeSchemaWithRetry(
   };
 
   // Step 1: Validate with dry-run (read_only: true)
-  await ctx.runMutation(api.sessions.update, {
+  await ctx.runMutation(internal.sessions.updateInternal, {
     id: sessionId,
     schemaStatus: "validating" as const,
   });
@@ -285,7 +346,7 @@ async function executeSchemaWithRetry(
       } else {
         // Genuine SQL syntax error — fail early with classified error
         const classified = classifySchemaError(validateRes.status, errText);
-        await ctx.runMutation(api.sessions.update, {
+        await ctx.runMutation(internal.sessions.updateInternal, {
           id: sessionId,
           schemaStatus: "error" as const,
           schemaError: classified.userMessage,
@@ -299,7 +360,7 @@ async function executeSchemaWithRetry(
   }
 
   // Step 2: Execute with retry (max 3 attempts, exponential backoff + jitter)
-  await ctx.runMutation(api.sessions.update, {
+  await ctx.runMutation(internal.sessions.updateInternal, {
     id: sessionId,
     schemaStatus: "executing" as const,
   });
@@ -322,10 +383,10 @@ async function executeSchemaWithRetry(
       clearTimeout(timeoutId);
 
       if (res.ok) {
-        await ctx.runMutation(api.sessions.update, {
+        await ctx.runMutation(internal.sessions.updateInternal, {
           id: sessionId,
           schemaStatus: "success" as const,
-          schemaError: undefined,
+          schemaError: "",
         });
         console.log(`[executeSchema] Schema executed successfully (attempt ${attempt})`);
 
@@ -338,6 +399,11 @@ async function executeSchemaWithRetry(
           });
           if (reloadRes.ok) {
             console.log("[executeSchema] PostgREST schema cache reload triggered");
+            // Wait for PostgREST to process the reload — without this delay,
+            // the app may query before PostgREST refreshes, causing
+            // "Could not find the table in the schema cache" errors
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            console.log("[executeSchema] PostgREST reload delay complete");
           } else {
             console.warn("[executeSchema] Schema cache reload failed (non-fatal):", await reloadRes.text());
           }
@@ -375,7 +441,7 @@ async function executeSchemaWithRetry(
   }
 
   const errorMessage = lastClassifiedError?.userMessage ?? "Unknown error during schema execution";
-  await ctx.runMutation(api.sessions.update, {
+  await ctx.runMutation(internal.sessions.updateInternal, {
     id: sessionId,
     schemaStatus: "error" as const,
     schemaError: errorMessage,
@@ -429,14 +495,14 @@ async function verifySchemaHealthCheck(
     console.log(`[healthCheck] Found ${tableCount} public tables: ${tables.join(", ")}`);
 
     // Update session with verified table count
-    await ctx.runMutation(api.sessions.update, {
+    await ctx.runMutation(internal.sessions.updateInternal, {
       id: sessionId,
       schemaTablesCreated: tableCount,
     });
 
     if (tableCount === 0) {
       // Schema executed but no tables found — likely a problem
-      await ctx.runMutation(api.sessions.update, {
+      await ctx.runMutation(internal.sessions.updateInternal, {
         id: sessionId,
         schemaStatus: "error" as const,
         schemaError: "Schema executed but no tables were created. The SQL may have errors — try regenerating.",
@@ -458,22 +524,7 @@ async function verifySchemaHealthCheck(
   }
 }
 
-/** E2B template with Next.js 16 + Tailwind v4 + shadcn/ui */
-const TEMPLATE = "nextjs16-tailwind4";
-/** Project directory in sandbox */
-const PROJECT_DIR = "/home/user";
-
-/** Sandbox configuration with improved timeout and retry settings */
-const SANDBOX_CONFIG = {
-  /** Base timeout in seconds (15 minutes) */
-  TIMEOUT_SECONDS: 900,
-  /** Extended timeout for long operations in seconds (20 minutes) */
-  EXTENDED_TIMEOUT_SECONDS: 1200,
-  /** Maximum number of retry attempts */
-  MAX_RETRIES: 3,
-  /** Base delay between retries in milliseconds */
-  RETRY_DELAY_MS: 2000,
-} as const;
+// TEMPLATE, PROJECT_DIR, SANDBOX_CONFIG imported from ./constants
 
 /**
  * Classify a sandbox error for appropriate handling.
@@ -667,16 +718,16 @@ async function connectOrRecreateSandbox(
     timeoutMs: SANDBOX_CONFIG.TIMEOUT_SECONDS * 1000,
   });
 
-  // Clean up default template files so coder generates fresh ones
-  await sandbox.commands.run(`rm -f ${PROJECT_DIR}/app/page.tsx`);
-  await sandbox.commands.run(`rm -f ${PROJECT_DIR}/app/layout.tsx`);
-  await sandbox.commands.run(`rm -f ${PROJECT_DIR}/app/globals.css`);
-  await sandbox.commands.run(`rm -f ${PROJECT_DIR}/components/ui/resizable.tsx`);
+  // Clean up default template files — coder creates these fresh with design tokens/app content
+  for (const filePath of TEMPLATE_CLEANUP_FILES) {
+    await sandbox.commands.run(`rm -f ${filePath}`);
+  }
+  // NOTE: components/ui/*.tsx (other than resizable) are pre-installed by shadcn and intentionally preserved
 
   const sandboxId = sandbox.sandboxId;
   const previewUrl = `https://${sandbox.getHost(3000)}`;
 
-  console.log(`[connectOrRecreateSandbox] New sandbox created: ${sandboxId}`);
+  console.log(`[connectOrRecreateSandbox] New sandbox created: ${sandboxId} (shadcn components pre-installed)`);
 
   return {
     sandbox,
@@ -717,6 +768,309 @@ async function restoreFilesToSandbox(
 }
 
 /**
+ * Run the Coder Agent with self-healing validation loop.
+ * Retries up to MAX_CODER_ATTEMPTS times, validating output after each attempt.
+ */
+async function runCoderWithValidation(
+  ctx: { runMutation: typeof import("./_generated/server").action["prototype"]["runMutation"] },
+  sessionId: import("./_generated/dataModel").Id<"sessions">,
+  architecture: string,
+  previewUrl: string,
+  toolContext: ToolContext,
+  sandboxActions: SandboxActions,
+  sandbox: Sandbox,
+  options: {
+    designTokensBlock?: string;
+    schemaGenerated?: boolean;
+    coderLimits: { initial: number; fix: number };
+    complexity: ArchitectureComplexity;
+  },
+  logPrefix: string
+): Promise<{
+  coderResult: Awaited<ReturnType<typeof runCoderAgent>> | null;
+  cumulativeFiles: Set<string>;
+  lastError?: string;
+}> {
+  const MAX_CODER_ATTEMPTS = 3;
+  let lastCoderError: string | undefined;
+  let coderResult: Awaited<ReturnType<typeof runCoderAgent>> | null = null;
+  const cumulativeFiles = new Set<string>();
+
+  for (let coderAttempt = 1; coderAttempt <= MAX_CODER_ATTEMPTS; coderAttempt++) {
+    if (coderAttempt === 1) {
+      console.log(`[${logPrefix}] Running Coder Agent...`);
+      await ctx.runMutation(internal.sessions.updateInternal, {
+        id: sessionId,
+        coderStatus: "generating",
+        coderRetryCount: 0,
+      });
+    } else {
+      console.log(`[${logPrefix}] Coder fix attempt ${coderAttempt}/${MAX_CODER_ATTEMPTS}...`);
+      await ctx.runMutation(internal.sessions.updateInternal, {
+        id: sessionId,
+        coderStatus: "fixing",
+        coderRetryCount: coderAttempt - 1,
+      });
+
+      await ctx.runMutation(api.messages.create, {
+        sessionId,
+        role: "assistant",
+        content: `Code validation found issues (attempt ${coderAttempt - 1}/${MAX_CODER_ATTEMPTS}). Auto-fixing...`,
+      });
+    }
+
+    const errorFeedback = lastCoderError && coderResult
+      ? formatCoderRetryPrompt(
+          architecture,
+          lastCoderError,
+          coderAttempt,
+          [...cumulativeFiles]
+        )
+      : undefined;
+
+    coderResult = await runCoderAgent(
+      architecture,
+      previewUrl,
+      toolContext,
+      sandboxActions,
+      options.designTokensBlock,
+      options.schemaGenerated,
+      errorFeedback,
+      { recursionLimit: options.coderLimits.initial, fixRecursionLimit: options.coderLimits.fix }
+    );
+
+    if (coderResult.error) {
+      const isExhaustion = coderResult.error.startsWith("recursion_exhaustion:");
+
+      if (isExhaustion && coderResult.filesChanged.length > 0) {
+        console.warn(`[${logPrefix}] Coder recursion exhausted after ${coderResult.filesChanged.length} files (complexity: ${options.complexity}, limit: ${options.coderLimits.initial})`);
+
+        await ctx.runMutation(internal.sessions.updateInternal, {
+          id: sessionId,
+          coderStatus: "error",
+          coderError: `Generation incomplete: ${coderResult.filesChanged.length} files created before reaching iteration limit`,
+          coderRetryCount: coderAttempt - 1,
+        });
+
+        await ctx.runMutation(api.messages.create, {
+          sessionId,
+          role: "assistant",
+          content: `App generation completed partially (${coderResult.filesChanged.length} files created). This app is complex and reached the generation limit. The preview should work — use the chat to add any missing components or fix issues.`,
+        });
+
+        break;
+      }
+
+      console.error(`[${logPrefix}] Coder failed: ${coderResult.error}`);
+      break;
+    }
+
+    console.log(`[${logPrefix}] Created/modified ${coderResult.filesChanged.length} files`);
+
+    for (const f of coderResult.filesChanged) {
+      cumulativeFiles.add(f);
+    }
+
+    // Run npm install before validation
+    console.log(`[${logPrefix}] Running npm install...`);
+    try {
+      let postInstallResult = await sandbox.commands.run("npm install", { cwd: PROJECT_DIR });
+      if (postInstallResult.exitCode !== 0 && postInstallResult.stderr.includes("ERESOLVE")) {
+        postInstallResult = await sandbox.commands.run("npm install --legacy-peer-deps", { cwd: PROJECT_DIR });
+      }
+    } catch (error) {
+      console.warn(`[${logPrefix}] Post-install error (non-fatal): ${error}`);
+    }
+
+    // Validate coder output
+    console.log(`[${logPrefix}] Validating coder output...`);
+    await ctx.runMutation(internal.sessions.updateInternal, {
+      id: sessionId,
+      coderStatus: "validating",
+    });
+
+    const validation = await validateCoderOutput(
+      sandboxActions,
+      [...cumulativeFiles]
+    );
+
+    if (validation.success) {
+      console.log(`[${logPrefix}] Coder validation passed`);
+      await ctx.runMutation(internal.sessions.updateInternal, {
+        id: sessionId,
+        coderStatus: "success",
+        coderRetryCount: coderAttempt - 1,
+      });
+
+      if (coderAttempt > 1) {
+        await ctx.runMutation(api.messages.create, {
+          sessionId,
+          role: "assistant",
+          content: `Code validated successfully after ${coderAttempt - 1} fix${coderAttempt - 1 === 1 ? "" : "es"}.`,
+        });
+      }
+      break;
+    }
+
+    lastCoderError = validation.formattedWarnings
+      ? `${validation.formattedErrors}\n\n${validation.formattedWarnings}`
+      : validation.formattedErrors;
+    console.warn(
+      `[${logPrefix}] Coder validation failed (attempt ${coderAttempt}/${MAX_CODER_ATTEMPTS}): ${validation.errors.length} errors`
+    );
+
+    if (validation.warnings.length > 0) {
+      console.warn(`[${logPrefix}] Coder validation warnings:`, validation.warnings);
+    }
+
+    if (coderAttempt === MAX_CODER_ATTEMPTS) {
+      console.error(`[${logPrefix}] Coder self-healing failed after ${MAX_CODER_ATTEMPTS} attempts`);
+      await ctx.runMutation(internal.sessions.updateInternal, {
+        id: sessionId,
+        coderStatus: "error",
+        coderError: `${validation.errors.length} validation errors after ${MAX_CODER_ATTEMPTS} attempts`,
+        coderRetryCount: MAX_CODER_ATTEMPTS,
+      });
+
+      const errorSummary = validation.errors
+        .slice(0, 5)
+        .map(e => `- ${e.file}: ${e.message}`)
+        .join('\n');
+      const moreCount = validation.errors.length > 5
+        ? `\n- ... and ${validation.errors.length - 5} more`
+        : '';
+
+      await ctx.runMutation(api.messages.create, {
+        sessionId,
+        role: "assistant",
+        content: `Code generation completed with ${validation.errors.length} issue${validation.errors.length === 1 ? "" : "s"} that couldn't be auto-fixed:\n${errorSummary}${moreCount}\n\nThe app may still work — try the preview and use the chat to fix remaining issues.`,
+      });
+    }
+  }
+
+  return { coderResult, cumulativeFiles, lastError: lastCoderError };
+}
+
+/**
+ * Run the Schema-First Pipeline: generate schema.sql, execute against Supabase, verify tables.
+ * Retries up to MAX_SCHEMA_ATTEMPTS times with the schema agent.
+ */
+async function runSchemaFirstPipeline(
+  ctx: { runMutation: typeof import("./_generated/server").action["prototype"]["runMutation"]; runQuery: typeof import("./_generated/server").action["prototype"]["runQuery"] },
+  sessionId: import("./_generated/dataModel").Id<"sessions">,
+  databaseSection: string,
+  sandboxActions: SandboxActions,
+  toolContext: ToolContext,
+  supabaseStatus: {
+    supabaseAccessToken: string | null;
+    supabaseRefreshToken: string | null;
+    supabaseTokenExpiry: number | null;
+    supabaseProjectRef: string;
+  },
+  logPrefix: string
+): Promise<{ schemaGenerated: boolean; error?: string }> {
+  const MAX_SCHEMA_ATTEMPTS = 3;
+  let lastSchemaError: string | undefined;
+
+  for (let schemaAttempt = 1; schemaAttempt <= MAX_SCHEMA_ATTEMPTS; schemaAttempt++) {
+    console.log(`[${logPrefix}] Schema attempt ${schemaAttempt}/${MAX_SCHEMA_ATTEMPTS}...`);
+
+    const schemaResult = await runSchemaAgent(
+      databaseSection,
+      toolContext,
+      sandboxActions,
+      lastSchemaError
+    );
+
+    if (schemaResult.error) {
+      lastSchemaError = schemaResult.error;
+      console.error(`[${logPrefix}] Schema agent failed (attempt ${schemaAttempt}): ${schemaResult.error}`);
+      continue;
+    }
+
+    const schemaContent = await sandboxActions.readFile("schema.sql");
+    if (!schemaContent?.trim()) {
+      lastSchemaError = "Schema agent did not generate schema.sql";
+      console.error(`[${logPrefix}] Schema agent did not write schema.sql (attempt ${schemaAttempt})`);
+      continue;
+    }
+
+    console.log(`[${logPrefix}] Executing schema.sql via Management API...`);
+    const token = await refreshTokenIfNeeded(ctx, sessionId, supabaseStatus);
+
+    if (!token) {
+      lastSchemaError = "Could not obtain Supabase token";
+      break;
+    }
+
+    const execResult = await executeSchemaWithRetry(
+      ctx, sessionId, schemaContent,
+      supabaseStatus.supabaseProjectRef, token,
+    );
+
+    if (!execResult.success) {
+      lastSchemaError = execResult.error ?? "Schema execution failed";
+      console.error(`[${logPrefix}] Schema execution failed (attempt ${schemaAttempt}): ${lastSchemaError}`);
+      continue;
+    }
+
+    const healthCheck = await verifySchemaHealthCheck(
+      ctx, sessionId,
+      supabaseStatus.supabaseProjectRef, token,
+    );
+
+    if (!healthCheck.success) {
+      lastSchemaError = healthCheck.error ?? "Health check failed: no tables created";
+      console.error(`[${logPrefix}] Health check failed (attempt ${schemaAttempt}): ${lastSchemaError}`);
+      continue;
+    }
+
+    // Success
+    console.log(`[${logPrefix}] Schema-first pipeline succeeded on attempt ${schemaAttempt}: ${healthCheck.tableCount} tables created`);
+
+    await ctx.runMutation(api.messages.create, {
+      sessionId,
+      role: "assistant",
+      content: `Database ready: ${healthCheck.tableCount} table${healthCheck.tableCount === 1 ? "" : "s"} created successfully.`,
+    });
+
+    return { schemaGenerated: true };
+  }
+
+  console.warn(`[${logPrefix}] Schema-first pipeline failed after ${MAX_SCHEMA_ATTEMPTS} attempts. Falling back to coder-generated schema.`);
+  return { schemaGenerated: false, error: lastSchemaError };
+}
+
+/**
+ * Sync key files from sandbox to Convex storage.
+ * Always re-reads from sandbox to catch npm-modified files (e.g. package.json).
+ */
+async function syncFilesToConvex(
+  ctx: { runMutation: typeof import("./_generated/server").action["prototype"]["runMutation"] },
+  sessionId: import("./_generated/dataModel").Id<"sessions">,
+  sandbox: Sandbox,
+  logPrefix: string
+): Promise<void> {
+  console.log(`[${logPrefix}] Syncing all key files to Convex...`);
+  for (const filePath of KEY_FILES) {
+    try {
+      const fullPath = `${PROJECT_DIR}/${filePath}`;
+      const content = await sandbox.files.read(fullPath);
+      if (content) {
+        await ctx.runMutation(api.files.upsert, {
+          sessionId,
+          path: filePath,
+          content,
+        });
+        console.log(`[${logPrefix}] Synced file: ${filePath}`);
+      }
+    } catch {
+      // File doesn't exist, skip
+    }
+  }
+}
+
+/**
  * Generate a new app from user requirements.
  * Runs: Architecture Agent → Coder Agent
  *
@@ -749,20 +1103,20 @@ export const generate = action({
         timeoutMs: SANDBOX_CONFIG.TIMEOUT_SECONDS * 1000,
       });
 
-      // Clean up default template files so coder generates fresh ones
-      await sandbox.commands.run(`rm -f ${PROJECT_DIR}/app/page.tsx`);
-      await sandbox.commands.run(`rm -f ${PROJECT_DIR}/app/layout.tsx`);
-      await sandbox.commands.run(`rm -f ${PROJECT_DIR}/app/globals.css`);
-      await sandbox.commands.run(`rm -f ${PROJECT_DIR}/components/ui/resizable.tsx`);
+      // Clean up default template files — coder creates these fresh with design tokens/app content
+      for (const filePath of TEMPLATE_CLEANUP_FILES) {
+        await sandbox.commands.run(`rm -f ${filePath}`);
+      }
+      // NOTE: components/ui/*.tsx (other than resizable) are pre-installed by shadcn and intentionally preserved
 
       const sandboxId = sandbox.sandboxId;
       const previewUrl = `https://${sandbox.getHost(3000)}`;
 
-      console.log(`[generate] Sandbox ready: ${sandboxId}`);
+      console.log(`[generate] Sandbox ready: ${sandboxId} (shadcn components pre-installed)`);
       console.log(`[generate] Preview: ${previewUrl}`);
 
       // Update session with sandbox info
-      await ctx.runMutation(api.sessions.update, {
+      await ctx.runMutation(internal.sessions.updateInternal, {
         id: sessionId,
         sandboxId,
         previewUrl,
@@ -859,7 +1213,7 @@ export const generate = action({
       };
 
       // 4. Check Supabase status and build augmented prompt
-      const supabaseStatus = await ctx.runQuery(api.sessions.getSupabaseStatus, { id: sessionId });
+      const supabaseStatus = await ctx.runQuery(internal.sessions.getSupabaseStatusInternal, { id: sessionId });
       const hasSupabase = supabaseStatus?.supabaseConnected ?? false;
       const needsDb = needsDatabaseIntegration(prompt);
 
@@ -886,6 +1240,11 @@ export const generate = action({
       const architecture = files.get("architecture.md") ?? archResult.response;
       console.log(`[generate] Architecture created (${architecture.length} chars)`);
 
+      // Estimate architecture complexity for dynamic coder limits
+      const complexity = estimateArchitectureComplexity(architecture);
+      const coderLimits = CODER_RECURSION_LIMITS[complexity];
+      console.log(`[generate] Architecture complexity: ${complexity} (recursion: ${coderLimits.initial}/${coderLimits.fix})`);
+
       // Extract app name from architecture
       let appName = extractAppNameFromArchitecture(architecture);
       if (!appName) {
@@ -893,7 +1252,7 @@ export const generate = action({
       }
 
       // Update session with architecture and app name
-      await ctx.runMutation(api.sessions.update, {
+      await ctx.runMutation(internal.sessions.updateInternal, {
         id: sessionId,
         architecture,
         appName,
@@ -934,71 +1293,87 @@ export const generate = action({
         console.warn(`[generate] Pre-install error (non-fatal): ${error}`);
       }
 
-      // 6. Run Coder Agent
-      console.log("[generate] Running Coder Agent...");
-      const coderResult = await runCoderAgent(
-        architecture,
-        previewUrl,
-        toolContext,
-        sandboxActions,
-        designTokensBlock
+      // 5d. Schema-First Pipeline: Generate & validate schema BEFORE coder
+      let schemaGenerated = false;
+      if (hasSupabase && supabaseStatus?.supabaseAccessToken && supabaseStatus?.supabaseProjectRef) {
+        const databaseSection = extractDatabaseSection(architecture);
+
+        if (databaseSection) {
+          console.log("[generate] DATABASE section found — running Schema-First Pipeline...");
+          const schemaPipelineResult = await runSchemaFirstPipeline(
+            ctx, sessionId, databaseSection, sandboxActions, toolContext,
+            supabaseStatus as { supabaseAccessToken: string; supabaseRefreshToken: string | null; supabaseTokenExpiry: number | null; supabaseProjectRef: string },
+            "generate"
+          );
+          schemaGenerated = schemaPipelineResult.schemaGenerated;
+        }
+      }
+
+      // 6. Run Coder Agent with self-healing validation loop
+      const { coderResult, cumulativeFiles } = await runCoderWithValidation(
+        ctx, sessionId, architecture, previewUrl, toolContext, sandboxActions, sandbox,
+        {
+          designTokensBlock,
+          schemaGenerated,
+          coderLimits,
+          complexity,
+        },
+        "generate"
       );
 
-      if (coderResult.error) {
-        console.error(`[generate] Coder failed: ${coderResult.error}`);
-        // Still return partial success if some files were created
-        if (coderResult.filesChanged.length > 0) {
-          return {
-            success: true,
-            appName,
-            previewUrl,
-            filesCreated: coderResult.filesChanged.length,
-            error: coderResult.error,
-          };
-        }
+      // Handle case where coder agent itself failed (not validation)
+      if (!coderResult || (coderResult.error && coderResult.filesChanged.length === 0)) {
+        // Distinguish error types for user messaging
+        const isExhaustion = coderResult?.error?.startsWith("recursion_exhaustion:");
+        const errorMsg = isExhaustion
+          ? "App generation couldn't start — the architecture may be too complex. Try simplifying your prompt or breaking it into phases."
+          : `Code generation failed: ${coderResult?.error ?? "Unknown error"}`;
+
         return {
           success: false,
-          error: `Code generation failed: ${coderResult.error}`,
+          error: errorMsg,
         };
       }
 
-      console.log(`[generate] Created ${coderResult.filesChanged.length} files`);
-      console.log(`[generate] Files: ${coderResult.filesChanged.join(", ")}`);
-
-      // 6b. Run npm install after coder to catch any missing packages
-      console.log("[generate] Running npm install...");
-      try {
-        let postInstallResult = await sandbox.commands.run("npm install", { cwd: PROJECT_DIR });
-        if (postInstallResult.exitCode !== 0 && postInstallResult.stderr.includes("ERESOLVE")) {
-          postInstallResult = await sandbox.commands.run("npm install --legacy-peer-deps", { cwd: PROJECT_DIR });
-        }
-      } catch (error) {
-        console.warn(`[generate] Post-install error (non-fatal): ${error}`);
+      // Partial success if agent error but some files were created
+      if (coderResult.error && coderResult.filesChanged.length > 0) {
+        return {
+          success: true,
+          appName,
+          previewUrl,
+          filesCreated: coderResult.filesChanged.length,
+          error: coderResult.error,
+        };
       }
 
-      // 7a. Auto-execute schema.sql if Supabase Management API is available
-      let schemaResult: { success: boolean; error?: string; tableCount?: number } | null = null;
-      if (hasSupabase && supabaseStatus?.supabaseAccessToken && supabaseStatus?.supabaseProjectRef) {
-        const schemaContent = await sandboxActions.readFile("schema.sql");
-        if (schemaContent?.trim()) {
-          console.log("[generate] Executing schema.sql via Management API...");
-          const token = await refreshTokenIfNeeded(ctx, sessionId, supabaseStatus);
-          if (token) {
-            schemaResult = await executeSchemaWithRetry(
-              ctx,
-              sessionId,
-              schemaContent,
-              supabaseStatus.supabaseProjectRef,
-              token,
-            );
+      console.log(`[generate] Final file count: ${coderResult.filesChanged.length} files`);
 
-            // Health check: verify tables actually exist
-            if (schemaResult.success) {
-              const healthCheck = await verifySchemaHealthCheck(ctx, sessionId, supabaseStatus.supabaseProjectRef, token);
-              if (!healthCheck.success) {
-                schemaResult = { success: false, error: healthCheck.error };
-              } else {
-                schemaResult.tableCount = healthCheck.tableCount;
+      // 7a. Auto-execute schema.sql if Supabase Management API is available
+      // SKIP if schema was already executed in the schema-first pipeline
+      let schemaResult: { success: boolean; error?: string; tableCount?: number } | null = null;
+      if (!schemaGenerated) {
+        if (hasSupabase && supabaseStatus?.supabaseAccessToken && supabaseStatus?.supabaseProjectRef) {
+          const schemaContent = await sandboxActions.readFile("schema.sql");
+          if (schemaContent?.trim()) {
+            console.log("[generate] Executing schema.sql via Management API...");
+            const token = await refreshTokenIfNeeded(ctx, sessionId, supabaseStatus);
+            if (token) {
+              schemaResult = await executeSchemaWithRetry(
+                ctx,
+                sessionId,
+                schemaContent,
+                supabaseStatus.supabaseProjectRef,
+                token,
+              );
+
+              // Health check: verify tables actually exist
+              if (schemaResult.success) {
+                const healthCheck = await verifySchemaHealthCheck(ctx, sessionId, supabaseStatus.supabaseProjectRef, token);
+                if (!healthCheck.success) {
+                  schemaResult = { success: false, error: healthCheck.error };
+                } else {
+                  schemaResult.tableCount = healthCheck.tableCount;
+                }
               }
             }
           }
@@ -1044,40 +1419,8 @@ export const generate = action({
         });
       }
 
-      // 8. Ensure all key files are saved to Convex (including template files that might have been used)
-      console.log("[generate] Syncing all key files to Convex...");
-      const keyFiles = [
-        "app/globals.css",
-        "app/layout.tsx",
-        "app/page.tsx",
-        "tailwind.config.ts",
-        "tailwind.config.js",
-        "package.json",
-        // Template config files (needed for export to run locally)
-        "next.config.ts",
-        "next.config.mjs",
-        "tsconfig.json",
-        "postcss.config.mjs",
-        "postcss.config.js",
-      ];
-
-      for (const filePath of keyFiles) {
-        // Always re-read from sandbox to catch npm-modified files (e.g. package.json)
-        try {
-          const fullPath = `${PROJECT_DIR}/${filePath}`;
-          const content = await sandbox.files.read(fullPath);
-          if (content) {
-            await ctx.runMutation(api.files.upsert, {
-              sessionId,
-              path: filePath,
-              content,
-            });
-            console.log(`[generate] Synced file: ${filePath}`);
-          }
-        } catch {
-          // File doesn't exist, skip
-        }
-      }
+      // 8. Sync key files to Convex
+      await syncFilesToConvex(ctx, sessionId, sandbox, "generate");
 
       return {
         success: true,
@@ -1179,7 +1522,7 @@ export const modify = action({
           await new Promise((resolve) => setTimeout(resolve, 8000));
 
           // Update session with new sandbox info
-          await ctx.runMutation(api.sessions.update, {
+          await ctx.runMutation(internal.sessions.updateInternal, {
             id: sessionId,
             sandboxId,
             previewUrl,
@@ -1289,7 +1632,7 @@ export const modify = action({
       };
 
       // 6b. Ensure .env.local has Supabase credentials
-      const supabaseStatus = await ctx.runQuery(api.sessions.getSupabaseStatus, { id: sessionId });
+      const supabaseStatus = await ctx.runQuery(internal.sessions.getSupabaseStatusInternal, { id: sessionId });
       if (supabaseStatus?.supabaseConnected && supabaseStatus?.supabaseUrl && supabaseStatus?.supabaseAnonKey) {
         await sandbox.files.write(
           `${PROJECT_DIR}/.env.local`,
@@ -1308,11 +1651,6 @@ export const modify = action({
         };
       }
 
-      // If it's a big change request, warn the user
-      if (isBigChangeRequest(message)) {
-        console.log("[modify] Big change detected, warning user...");
-        // Still try with Chat Agent but include warning in response
-      }
 
       // 7. Run Chat Agent
       console.log("[modify] Running Chat Agent...");
@@ -1386,40 +1724,8 @@ export const modify = action({
         }
       }
 
-      // 8. Ensure all key files are saved to Convex
-      console.log("[modify] Syncing key files to Convex...");
-      const keyFiles = [
-        "app/globals.css",
-        "app/layout.tsx",
-        "app/page.tsx",
-        "tailwind.config.ts",
-        "tailwind.config.js",
-        "package.json",
-        // Template config files (needed for export to run locally)
-        "next.config.ts",
-        "next.config.mjs",
-        "tsconfig.json",
-        "postcss.config.mjs",
-        "postcss.config.js",
-      ];
-
-      for (const filePath of keyFiles) {
-        // Always re-read from sandbox to catch npm-modified files (e.g. package.json)
-        try {
-          const fullPath = `${PROJECT_DIR}/${filePath}`;
-          const content = await sandbox.files.read(fullPath);
-          if (content) {
-            await ctx.runMutation(api.files.upsert, {
-              sessionId,
-              path: filePath,
-              content,
-            });
-            console.log(`[modify] Synced file: ${filePath}`);
-          }
-        } catch {
-          // File doesn't exist, skip
-        }
-      }
+      // 8. Sync key files to Convex
+      await syncFilesToConvex(ctx, sessionId, sandbox, "modify");
 
       return {
         success: true,

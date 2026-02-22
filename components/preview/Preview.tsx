@@ -160,6 +160,8 @@ export function Preview({ previewUrl, code, onRetry, isGenerating, generationSta
       const blob = new Blob([content], { type: "text/html" });
       const url = URL.createObjectURL(blob);
       window.open(url, "_blank");
+      // Revoke after brief delay to allow new tab to load
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
   };
 
@@ -175,29 +177,35 @@ export function Preview({ previewUrl, code, onRetry, isGenerating, generationSta
         {/* Viewport Switcher */}
         <div className="flex items-center gap-1 bg-zinc-800 rounded-lg p-1">
           <button
+            type="button"
             onClick={() => setViewport("desktop")}
             className={`p-1.5 rounded ${
               viewport === "desktop" ? "bg-zinc-700" : "hover:bg-zinc-700/50"
             }`}
-            title="Desktop"
+            aria-label="Desktop view"
+            aria-pressed={viewport === "desktop"}
           >
             <Monitor className="w-4 h-4 text-zinc-400" />
           </button>
           <button
+            type="button"
             onClick={() => setViewport("tablet")}
             className={`p-1.5 rounded ${
               viewport === "tablet" ? "bg-zinc-700" : "hover:bg-zinc-700/50"
             }`}
-            title="Tablet"
+            aria-label="Tablet view"
+            aria-pressed={viewport === "tablet"}
           >
             <Tablet className="w-4 h-4 text-zinc-400" />
           </button>
           <button
+            type="button"
             onClick={() => setViewport("mobile")}
             className={`p-1.5 rounded ${
               viewport === "mobile" ? "bg-zinc-700" : "hover:bg-zinc-700/50"
             }`}
-            title="Mobile"
+            aria-label="Mobile view"
+            aria-pressed={viewport === "mobile"}
           >
             <Smartphone className="w-4 h-4 text-zinc-400" />
           </button>
@@ -206,23 +214,26 @@ export function Preview({ previewUrl, code, onRetry, isGenerating, generationSta
         {/* Actions */}
         <div className="flex items-center gap-2">
           <button
+            type="button"
             onClick={handleRefresh}
             className="p-1.5 hover:bg-zinc-800 rounded"
-            title="Refresh"
+            aria-label="Refresh preview"
           >
             <RefreshCw className="w-4 h-4 text-zinc-400" />
           </button>
           <button
+            type="button"
             onClick={handleOpenInNewTab}
             className="p-1.5 hover:bg-zinc-800 rounded"
-            title="Open in new tab"
+            aria-label="Open in new tab"
           >
             <ExternalLink className="w-4 h-4 text-zinc-400" />
           </button>
           <button
+            type="button"
             onClick={handleDownload}
             className="p-1.5 hover:bg-zinc-800 rounded"
-            title="Download HTML"
+            aria-label="Download HTML"
           >
             <Download className="w-4 h-4 text-zinc-400" />
           </button>

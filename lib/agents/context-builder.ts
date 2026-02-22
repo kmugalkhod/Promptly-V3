@@ -17,7 +17,7 @@ import type {
 
 /**
  * Request complexity levels (local definition to avoid circular dependency)
- * @deprecated Use Complexity from intent-extractor.ts for new code
+ * @deprecated Legacy complexity enum — kept for backward compatibility
  */
 export enum RequestComplexity {
   SIMPLE = "simple",
@@ -65,7 +65,7 @@ export function getContextConfigForComplexity(
         maxFullFiles: 10,
         minScoreThreshold: 0.08,
         maxFiles: 10,
-        recursionLimit: 75,
+        recursionLimit: 150,
       };
     case RequestComplexity.ARCHITECTURAL:
       return {
@@ -73,7 +73,7 @@ export function getContextConfigForComplexity(
         maxFullFiles: 15,
         minScoreThreshold: 0.05,
         maxFiles: 15,
-        recursionLimit: 100,
+        recursionLimit: 200,
       };
     default:
       return {

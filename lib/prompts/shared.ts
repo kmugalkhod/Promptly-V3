@@ -12,13 +12,31 @@
  */
 export function validateGlobalsCss(content: string): string | null {
   const lines = content.split("\n");
-  // Find first non-empty, non-comment line
-  const firstContentLine = lines.find(
-    (line) => line.trim() && !line.trim().startsWith("/*") && !line.trim().startsWith("*") && !line.trim().startsWith("//")
-  );
+  // Find first non-empty, non-comment line (properly tracking block comments)
+  let firstContentLine: string | undefined;
+  let inBlockComment = false;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue; // skip empty lines
+    if (inBlockComment) {
+      if (trimmed.includes("*/")) {
+        inBlockComment = false;
+      }
+      continue;
+    }
+    if (trimmed.startsWith("//")) continue; // single-line comment
+    if (trimmed.startsWith("/*")) {
+      if (!trimmed.includes("*/")) {
+        inBlockComment = true;
+      }
+      continue; // skip entire comment line (including single-line block comments like /* foo */)
+    }
+    firstContentLine = line;
+    break;
+  }
 
-  if (!firstContentLine || !firstContentLine.includes('@import "tailwindcss"')) {
-    return `ERROR: globals.css MUST start with '@import "tailwindcss"' as the first non-comment line. Your file starts with: "${firstContentLine?.trim() ?? "(empty)"}". Rewrite the file with '@import "tailwindcss"' as the first line.`;
+  if (!firstContentLine || (!firstContentLine.includes('@import "tailwindcss"') && !firstContentLine.includes("@import 'tailwindcss'"))) {
+    return `ERROR: globals.css MUST start with '@import "tailwindcss"' (single or double quotes) as the first non-comment line. Your file starts with: "${firstContentLine?.trim() ?? "(empty)"}". Rewrite the file with '@import "tailwindcss"' as the first line.`;
   }
 
   // Check for Tailwind v3 syntax

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { useQuery, useMutation, useAction } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { Id } from "@/convex/_generated/dataModel";
@@ -13,6 +13,7 @@ interface ChatPanelProps {
   setIsProcessing: (value: boolean) => void;
   setGenerationStage: (stage: string | undefined) => void;
   onOpenSettings?: () => void;
+  initialPrompt?: string;
 }
 
 /**
@@ -57,6 +58,7 @@ export function ChatPanel({
   setIsProcessing,
   setGenerationStage,
   onOpenSettings,
+  initialPrompt,
 }: ChatPanelProps) {
   const [error, setError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -139,7 +141,7 @@ export function ChatPanel({
       } else {
         // Existing project - use modify action
         if (!hasSandbox) {
-          // Need to create sandbox first
+          // Need to create sandbox first — generate handles the full flow
           setStatusMessage("Creating sandbox...");
           setGenerationStage("Creating sandbox...");
           const genResult = await generate({ sessionId, prompt: message });
@@ -147,6 +149,19 @@ export function ChatPanel({
             setError(genResult.error ?? "Failed to create sandbox");
             return;
           }
+          // generate() already created the app; save response and return
+          const responseMessage = genResult.appName
+            ? `I've created "${genResult.appName}" with ${genResult.filesCreated} files. You can see the preview on the right!`
+            : `Generated ${genResult.filesCreated} files. Check the preview!`;
+          await createMessage({
+            sessionId,
+            role: "assistant",
+            content: responseMessage,
+          });
+          if (genResult.error) {
+            setError(`Warning: ${genResult.error}`);
+          }
+          return;
         }
 
         setStatusMessage("Processing your request...");
@@ -189,13 +204,28 @@ export function ChatPanel({
     }
   };
 
-  // Transform messages for MessageList component
-  const formattedMessages =
-    messages?.map((msg) => ({
-      _id: msg._id,
-      role: msg.role,
-      content: msg.content,
-    })) ?? [];
+  // Auto-submit initialPrompt from welcome experience
+  const hasAutoSubmitted = useRef(false);
+  const handleSendRef = useRef(handleSend);
+  handleSendRef.current = handleSend;
+
+  useEffect(() => {
+    if (initialPrompt && !hasAutoSubmitted.current && session !== undefined && files !== undefined) {
+      hasAutoSubmitted.current = true;
+      handleSendRef.current(initialPrompt);
+    }
+  }, [initialPrompt, session, files]);
+
+  // Transform messages for MessageList component (memoized)
+  const formattedMessages = useMemo(
+    () =>
+      messages?.map((msg) => ({
+        _id: msg._id,
+        role: msg.role,
+        content: msg.content,
+      })) ?? [],
+    [messages]
+  );
 
   return (
     <div className="w-[400px] shrink-0 border-r border-zinc-800 bg-zinc-950 flex flex-col h-full">

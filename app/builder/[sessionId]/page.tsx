@@ -20,17 +20,19 @@ export default function BuilderPage({ params }: BuilderPageProps) {
   const router = useRouter();
   const { sessionId } = use(params);
 
-  // Validate and cast sessionId
+  // Validate sessionId format before casting
+  // Convex IDs are URL-safe base64-like strings (alphanumeric + possibly some special chars)
+  const isValidSessionId = !!sessionId && sessionId.length >= 5;
   const typedSessionId = sessionId as Id<"sessions">;
 
-  // Get session data
-  const session = useQuery(api.sessions.get, { id: typedSessionId });
+  // Get session data (skip query if invalid)
+  const session = useQuery(api.sessions.get, isValidSessionId ? { id: typedSessionId } : "skip");
 
   // Get files for code editor
-  const files = useQuery(api.files.listBySession, { sessionId: typedSessionId });
+  const files = useQuery(api.files.listBySession, isValidSessionId ? { sessionId: typedSessionId } : "skip");
 
   // Get messages to detect generation state
-  const messages = useQuery(api.messages.listBySession, { sessionId: typedSessionId });
+  const messages = useQuery(api.messages.listBySession, isValidSessionId ? { sessionId: typedSessionId } : "skip");
 
   // Selected file state for file explorer
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
@@ -51,6 +53,17 @@ export default function BuilderPage({ params }: BuilderPageProps) {
 
   // Settings modal state
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+
+  // Read pending prompt from welcome experience (sessionStorage)
+  const [initialPrompt] = useState<string | undefined>(() => {
+    if (typeof window === "undefined") return undefined;
+    const pending = sessionStorage.getItem("pendingPrompt");
+    if (pending) {
+      sessionStorage.removeItem("pendingPrompt");
+      return pending;
+    }
+    return undefined;
+  });
 
   // Effect to initialize sandbox on mount (only for existing projects with files)
   useEffect(() => {
@@ -85,10 +98,16 @@ export default function BuilderPage({ params }: BuilderPageProps) {
   const selectedFile =
     files?.find((f) => f.path === effectiveSelectedPath) || null;
 
+  // Invalid sessionId — redirect
+  if (!isValidSessionId) {
+    router.push("/builder");
+    return null;
+  }
+
   // Loading state
   if (session === undefined) {
     return (
-      <div className="h-screen flex flex-col items-center justify-center bg-zinc-950">
+      <div className="h-full flex flex-col items-center justify-center bg-zinc-950">
         <Loader2 className="w-8 h-8 text-violet-500 animate-spin mb-4" />
         <p className="text-zinc-400">Loading session...</p>
       </div>
@@ -98,13 +117,13 @@ export default function BuilderPage({ params }: BuilderPageProps) {
   // Session not found
   if (session === null) {
     return (
-      <div className="h-screen flex flex-col items-center justify-center bg-zinc-950">
+      <div className="h-full flex flex-col items-center justify-center bg-zinc-950">
         <h1 className="text-2xl font-bold text-white mb-2">Session Not Found</h1>
         <p className="text-zinc-400 mb-4">
           The session you&apos;re looking for doesn&apos;t exist.
         </p>
         <button
-          onClick={() => router.push("/")}
+          onClick={() => router.push("/builder")}
           className="px-4 py-2 bg-violet-600 hover:bg-violet-500 rounded-lg text-white transition-colors"
         >
           Go Home
@@ -119,11 +138,10 @@ export default function BuilderPage({ params }: BuilderPageProps) {
   const latestCode = latestFile?.content;
 
   return (
-    <div className="h-screen flex flex-col bg-zinc-950">
+    <div className="flex h-full flex-col bg-zinc-950">
       {/* Header */}
       <Header
         projectName={session.appName}
-        onBack={() => router.push("/")}
         onSettings={() => setIsSettingsModalOpen(true)}
         onDownload={() => setIsDownloadModalOpen(true)}
       />
@@ -141,12 +159,14 @@ export default function BuilderPage({ params }: BuilderPageProps) {
         }
       />
 
-      {/* Settings Modal */}
-      <SettingsModal
-        isOpen={isSettingsModalOpen}
-        onClose={() => setIsSettingsModalOpen(false)}
-        sessionId={typedSessionId}
-      />
+      {/* Settings Modal — only mounted when open to avoid background queries */}
+      {isSettingsModalOpen && (
+        <SettingsModal
+          isOpen={isSettingsModalOpen}
+          onClose={() => setIsSettingsModalOpen(false)}
+          sessionId={typedSessionId}
+        />
+      )}
 
       {/* Sandbox Initialization Banner */}
       {sandboxStatus === "initializing" && (
@@ -170,6 +190,7 @@ export default function BuilderPage({ params }: BuilderPageProps) {
           setIsProcessing={setIsProcessing}
           setGenerationStage={setGenerationStage}
           onOpenSettings={() => setIsSettingsModalOpen(true)}
+          initialPrompt={initialPrompt}
         />
 
         {/* Right Panel - Preview / Code (with FileExplorer in Code tab) */}

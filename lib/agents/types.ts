@@ -10,7 +10,7 @@ import { Id } from "../../convex/_generated/dataModel";
 /**
  * Agent names for the three-agent system
  */
-export type AgentName = "architecture" | "coder" | "chat";
+export type AgentName = "architecture" | "schema" | "coder" | "chat";
 
 /**
  * Tool context passed to agent tools for file operations
@@ -131,7 +131,7 @@ export interface SmartContextConfig {
  */
 export interface GenerationState {
   /** Current phase of generation */
-  phase: "architecture" | "coder" | "complete" | "error";
+  phase: "architecture" | "schema" | "coder" | "complete" | "error";
   /** Architecture document content */
   architecture?: string;
   /** App name extracted from architecture */

@@ -16,6 +16,10 @@ const eslintConfig = defineConfig([
     "reference-code/**",
     // Ignore Convex generated files
     "convex/_generated/**",
+    // Ignore unrelated project directories
+    "agile-workspace/**",
+    "editorial-blog/**",
+    "nextjs-app/**",
   ]),
 ]);
 

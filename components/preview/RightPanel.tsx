@@ -55,8 +55,12 @@ export function RightPanel({
   return (
     <div className="flex-1 flex flex-col bg-zinc-950">
       {/* Tab Bar */}
-      <div className="h-10 border-b border-zinc-800 flex items-center px-2 gap-1">
+      <div className="h-10 border-b border-zinc-800 flex items-center px-2 gap-1" role="tablist">
         <button
+          type="button"
+          role="tab"
+          id="tab-preview"
+          aria-selected={activeTab === "preview"}
           onClick={() => setActiveTab("preview")}
           className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-sm transition-colors ${
             activeTab === "preview"
@@ -68,6 +72,10 @@ export function RightPanel({
           Preview
         </button>
         <button
+          type="button"
+          role="tab"
+          id="tab-code"
+          aria-selected={activeTab === "code"}
           onClick={() => setActiveTab("code")}
           className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-sm transition-colors ${
             activeTab === "code"
@@ -81,7 +89,7 @@ export function RightPanel({
       </div>
 
       {/* Content Area */}
-      <div className="flex-1 overflow-hidden">
+      <div className="flex-1 overflow-hidden" role="tabpanel" aria-labelledby={activeTab === "preview" ? "tab-preview" : "tab-code"}>
         {activeTab === "preview" ? (
           <Preview
             previewUrl={previewUrl}

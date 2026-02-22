@@ -8,16 +8,128 @@
  */
 
 import { v } from "convex/values";
-import { action } from "./_generated/server";
-import { api } from "./_generated/api";
+import { action, type ActionCtx } from "./_generated/server";
+import { internal, api } from "./_generated/api";
+import { type Id } from "./_generated/dataModel";
 import { Sandbox } from "e2b";
+import { TEMPLATE, PROJECT_DIR, SANDBOX_CONFIG, TEMPLATE_CLEANUP_FILES } from "./constants";
 
-/** E2B template with Next.js 16 + Tailwind v4 + shadcn/ui */
-const TEMPLATE = "nextjs16-tailwind4";
-/** Project directory in sandbox */
-const PROJECT_DIR = "/home/user";
-/** Sandbox timeout in seconds */
-const TIMEOUT = 600;
+/**
+ * Sanitize a file path to prevent directory traversal attacks.
+ * Rejects paths containing "..", leading "/", or empty paths.
+ */
+function sanitizePath(inputPath: string): string {
+  const normalized = inputPath.replace(/\\/g, "/");
+
+  if (normalized.includes("..")) {
+    throw new Error(`Invalid path: directory traversal not allowed: ${inputPath}`);
+  }
+
+  if (normalized.startsWith("/")) {
+    throw new Error(`Invalid path: absolute paths not allowed: ${inputPath}`);
+  }
+
+  const cleaned = normalized.replace(/^\/+|\/+$/g, "");
+
+  if (cleaned.length === 0) {
+    throw new Error("Invalid path: empty path");
+  }
+
+  return cleaned;
+}
+
+/**
+ * Shared helper: create a fresh sandbox, restore files, install packages, restart dev server.
+ * Consolidates the 7 duplicated patterns across initializeForSession, recreate, and extendTimeout.
+ */
+async function createSandboxWithFiles(
+  ctx: ActionCtx,
+  sessionId: Id<"sessions">,
+  files: Array<{ path: string; content: string }>,
+  logPrefix: string,
+  options?: { setStatusActive?: boolean }
+): Promise<{ sandbox: Sandbox; sandboxId: string; previewUrl: string; restoredFiles: number }> {
+  // 1. Create sandbox + wait for dev server
+  const sandbox = await Sandbox.create(TEMPLATE, {
+    timeoutMs: SANDBOX_CONFIG.SHORT_TIMEOUT_SECONDS * 1000,
+  });
+
+  console.log(`[${logPrefix}] Waiting for dev server to start...`);
+  await new Promise((resolve) => setTimeout(resolve, 3000));
+
+  // 2. Clean up default template files
+  for (const filePath of TEMPLATE_CLEANUP_FILES) {
+    await sandbox.commands.run(`rm -f ${filePath}`);
+  }
+
+  // 3. Restore files from Convex
+  let restoredFiles = 0;
+  for (const file of files) {
+    try {
+      const safePath = sanitizePath(file.path);
+      const fullPath = `${PROJECT_DIR}/${safePath}`;
+      const dirPath = fullPath.substring(0, fullPath.lastIndexOf("/"));
+      if (dirPath) {
+        await sandbox.commands.run(`mkdir -p ${dirPath}`);
+      }
+      await sandbox.files.write(fullPath, file.content);
+      restoredFiles++;
+    } catch (error) {
+      console.error(`[${logPrefix}] Failed to restore ${file.path}:`, error);
+    }
+  }
+  console.log(`[${logPrefix}] Restored ${restoredFiles}/${files.length} files`);
+
+  // 4. Restore .env.local with Supabase credentials if connected
+  const supabaseStatus = await ctx.runQuery(internal.sessions.getSupabaseStatusInternal, { id: sessionId });
+  if (supabaseStatus?.supabaseConnected && supabaseStatus?.supabaseUrl && supabaseStatus?.supabaseAnonKey) {
+    await sandbox.files.write(
+      `${PROJECT_DIR}/.env.local`,
+      `NEXT_PUBLIC_SUPABASE_URL=${supabaseStatus.supabaseUrl}\nNEXT_PUBLIC_SUPABASE_ANON_KEY=${supabaseStatus.supabaseAnonKey}\n`
+    );
+    console.log(`[${logPrefix}] Restored .env.local with Supabase credentials`);
+  }
+
+  // 5. npm install with ERESOLVE fallback
+  console.log(`[${logPrefix}] Running npm install...`);
+  try {
+    let installResult = await sandbox.commands.run("npm install", { cwd: PROJECT_DIR });
+    if (installResult.exitCode !== 0 && installResult.stderr.includes("ERESOLVE")) {
+      installResult = await sandbox.commands.run("npm install --legacy-peer-deps", { cwd: PROJECT_DIR });
+    }
+  } catch (installError) {
+    console.warn(`[${logPrefix}] npm install error (non-fatal): ${installError}`);
+  }
+
+  // 6. Restart dev server
+  console.log(`[${logPrefix}] Restarting dev server for clean compilation...`);
+  try {
+    await sandbox.commands.run(`pkill -f "next" || true`);
+  } catch {
+    // pkill may throw due to signal termination — safe to ignore
+  }
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  try {
+    await sandbox.commands.run(`cd ${PROJECT_DIR} && npm run dev > /tmp/next-dev.log 2>&1 &`, { timeoutMs: 5000 });
+  } catch {
+    // Background process launch may throw — safe to ignore
+  }
+  await new Promise((resolve) => setTimeout(resolve, 8000));
+
+  const sandboxId = sandbox.sandboxId;
+  const previewUrl = `https://${sandbox.getHost(3000)}`;
+
+  // 7. Update session
+  await ctx.runMutation(internal.sessions.updateInternal, {
+    id: sessionId,
+    sandboxId,
+    previewUrl,
+    ...(options?.setStatusActive ? { status: "active" as const } : {}),
+  });
+
+  console.log(`[${logPrefix}] Sandbox ready: ${sandboxId}`);
+  return { sandbox, sandboxId, previewUrl, restoredFiles };
+}
 
 /**
  * Create a new E2B sandbox for a session.
@@ -37,15 +149,14 @@ export const create = action({
 
     // Create sandbox
     const sandbox = await Sandbox.create(TEMPLATE, {
-      timeoutMs: TIMEOUT * 1000,
+      timeoutMs: SANDBOX_CONFIG.SHORT_TIMEOUT_SECONDS * 1000,
     });
 
-    // Clean up default page.tsx to avoid conflicts
+    // Clean up default template files
     console.log("Cleaning up default files...");
-    await sandbox.commands.run(`rm -f ${PROJECT_DIR}/app/page.tsx`);
-
-    // Remove broken shadcn/ui components (resizable.tsx has compatibility issues)
-    await sandbox.commands.run(`rm -f ${PROJECT_DIR}/components/ui/resizable.tsx`);
+    for (const filePath of TEMPLATE_CLEANUP_FILES) {
+      await sandbox.commands.run(`rm -f ${filePath}`);
+    }
 
     const sandboxId = sandbox.sandboxId;
     const previewUrl = `https://${sandbox.getHost(3000)}`;
@@ -54,7 +165,7 @@ export const create = action({
     console.log(`Preview URL: ${previewUrl}`);
 
     // Update session with sandbox info
-    await ctx.runMutation(api.sessions.update, {
+    await ctx.runMutation(internal.sessions.updateInternal, {
       id: args.sessionId,
       sandboxId,
       previewUrl,
@@ -116,90 +227,15 @@ export const initializeForSession = action({
       }
     }
 
-    // 5. Create fresh sandbox
+    // 5. Create fresh sandbox with file restoration
     console.log(`[initializeForSession] Creating new sandbox for session ${args.sessionId}`);
-    const sandbox = await Sandbox.create(TEMPLATE, {
-      timeoutMs: TIMEOUT * 1000,
-    });
+    const result = await createSandboxWithFiles(
+      ctx, args.sessionId, files,
+      "initializeForSession",
+      { setStatusActive: true }
+    );
 
-    // Wait for sandbox dev server to be fully ready
-    console.log(`[initializeForSession] Waiting for dev server to start...`);
-    await new Promise((resolve) => setTimeout(resolve, 3000));
-
-    // 6. Clean up default template files (so restored files take precedence)
-    await sandbox.commands.run(`rm -f ${PROJECT_DIR}/app/page.tsx`);
-    await sandbox.commands.run(`rm -f ${PROJECT_DIR}/app/layout.tsx`);
-    await sandbox.commands.run(`rm -f ${PROJECT_DIR}/app/globals.css`);
-    await sandbox.commands.run(`rm -f ${PROJECT_DIR}/components/ui/resizable.tsx`);
-
-    // 7. Restore all files from Convex
-    let restoredCount = 0;
-    for (const file of files) {
-      try {
-        const fullPath = `${PROJECT_DIR}/${file.path}`;
-        const dirPath = fullPath.substring(0, fullPath.lastIndexOf("/"));
-        if (dirPath) {
-          await sandbox.commands.run(`mkdir -p ${dirPath}`);
-        }
-        await sandbox.files.write(fullPath, file.content);
-        restoredCount++;
-      } catch (error) {
-        console.error(`[initializeForSession] Failed to restore ${file.path}:`, error);
-      }
-    }
-    console.log(`[initializeForSession] Restored ${restoredCount}/${files.length} files`);
-
-    // 7a. Restore .env.local with Supabase credentials if connected
-    const supabaseStatus = await ctx.runQuery(api.sessions.getSupabaseStatus, { id: args.sessionId });
-    if (supabaseStatus?.supabaseConnected && supabaseStatus?.supabaseUrl && supabaseStatus?.supabaseAnonKey) {
-      await sandbox.files.write(
-        `${PROJECT_DIR}/.env.local`,
-        `NEXT_PUBLIC_SUPABASE_URL=${supabaseStatus.supabaseUrl}\nNEXT_PUBLIC_SUPABASE_ANON_KEY=${supabaseStatus.supabaseAnonKey}\n`
-      );
-      console.log("[initializeForSession] Restored .env.local with Supabase credentials");
-    }
-
-    // 7b. Run npm install to restore packages
-    console.log(`[initializeForSession] Running npm install...`);
-    try {
-      let installResult = await sandbox.commands.run("npm install", { cwd: PROJECT_DIR });
-      if (installResult.exitCode !== 0 && installResult.stderr.includes("ERESOLVE")) {
-        installResult = await sandbox.commands.run("npm install --legacy-peer-deps", { cwd: PROJECT_DIR });
-      }
-    } catch (installError) {
-      console.warn(`[initializeForSession] npm install error (non-fatal): ${installError}`);
-    }
-
-    // 8. Restart Next.js dev server for clean compilation with restored files
-    // Hot reload can't reliably recompile CSS variables, @theme directives, and next/font declarations
-    console.log(`[initializeForSession] Restarting dev server for clean compilation...`);
-    try {
-      await sandbox.commands.run(`pkill -f "next" || true`);
-    } catch {
-      // pkill may throw due to signal termination — safe to ignore
-    }
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    try {
-      await sandbox.commands.run(`cd ${PROJECT_DIR} && npm run dev > /tmp/next-dev.log 2>&1 &`, { timeoutMs: 5000 });
-    } catch {
-      // Background process launch may throw — safe to ignore
-    }
-    // Wait for dev server to compile and be ready
-    await new Promise((resolve) => setTimeout(resolve, 8000));
-
-    const sandboxId = sandbox.sandboxId;
-    const previewUrl = `https://${sandbox.getHost(3000)}`;
-
-    // 10. Update session with new sandbox info
-    await ctx.runMutation(api.sessions.update, {
-      id: args.sessionId,
-      sandboxId,
-      previewUrl,
-      status: "active",
-    });
-
-    console.log(`[initializeForSession] Sandbox ready: ${sandboxId}`);
-    return { success: true, previewUrl, sandboxId };
+    return { success: true, previewUrl: result.previewUrl, sandboxId: result.sandboxId };
   },
 });
 
@@ -216,10 +252,17 @@ export const writeFile = action({
   },
   handler: async (ctx, args): Promise<{ success: boolean; error?: string }> => {
     try {
+      // Verify sandbox belongs to session
+      const session = await ctx.runQuery(api.sessions.get, { id: args.sessionId });
+      if (!session || session.sandboxId !== args.sandboxId) {
+        return { success: false, error: "Sandbox does not belong to session" };
+      }
+
       // Connect to existing sandbox
       const sandbox = await Sandbox.connect(args.sandboxId);
 
-      const fullPath = `${PROJECT_DIR}/${args.path}`;
+      const safePath = sanitizePath(args.path);
+      const fullPath = `${PROJECT_DIR}/${safePath}`;
 
       // Create directory if needed
       const dirPath = fullPath.substring(0, fullPath.lastIndexOf("/"));
@@ -252,13 +295,21 @@ export const writeFile = action({
  */
 export const readFile = action({
   args: {
+    sessionId: v.id("sessions"),
     sandboxId: v.string(),
     path: v.string(),
   },
-  handler: async (_, args): Promise<{ content: string | null; error?: string }> => {
+  handler: async (ctx, args): Promise<{ content: string | null; error?: string }> => {
     try {
+      // Verify sandbox belongs to session
+      const session = await ctx.runQuery(api.sessions.get, { id: args.sessionId });
+      if (!session || session.sandboxId !== args.sandboxId) {
+        return { content: null, error: "Sandbox does not belong to session" };
+      }
+
       const sandbox = await Sandbox.connect(args.sandboxId);
-      const fullPath = `${PROJECT_DIR}/${args.path}`;
+      const safePath = sanitizePath(args.path);
+      const fullPath = `${PROJECT_DIR}/${safePath}`;
       const content = await sandbox.files.read(fullPath);
       return { content };
     } catch (error) {
@@ -273,10 +324,17 @@ export const readFile = action({
  */
 export const checkStatus = action({
   args: {
+    sessionId: v.id("sessions"),
     sandboxId: v.string(),
   },
-  handler: async (_, args): Promise<{ alive: boolean; error?: string }> => {
+  handler: async (ctx, args): Promise<{ alive: boolean; error?: string }> => {
     try {
+      // Verify sandbox belongs to session
+      const session = await ctx.runQuery(api.sessions.get, { id: args.sessionId });
+      if (!session || session.sandboxId !== args.sandboxId) {
+        return { alive: false, error: "Sandbox does not belong to session" };
+      }
+
       const sandbox = await Sandbox.connect(args.sandboxId);
       // Run a simple command to verify it's responsive
       const result = await sandbox.commands.run("echo ok");
@@ -298,92 +356,13 @@ export const recreate = action({
   handler: async (ctx, args): Promise<{ sandboxId: string; previewUrl: string; restoredFiles: number }> => {
     console.log("Recreating sandbox after timeout...");
 
-    // Create new sandbox
-    const sandbox = await Sandbox.create(TEMPLATE, {
-      timeoutMs: TIMEOUT * 1000,
-    });
-
-    // Wait for sandbox dev server to be fully ready
-    console.log(`[recreate] Waiting for dev server to start...`);
-    await new Promise((resolve) => setTimeout(resolve, 3000));
-
-    // Clean up default template files (so restored files take precedence)
-    await sandbox.commands.run(`rm -f ${PROJECT_DIR}/app/page.tsx`);
-    await sandbox.commands.run(`rm -f ${PROJECT_DIR}/app/layout.tsx`);
-    await sandbox.commands.run(`rm -f ${PROJECT_DIR}/app/globals.css`);
-    await sandbox.commands.run(`rm -f ${PROJECT_DIR}/components/ui/resizable.tsx`);
-
-    const sandboxId = sandbox.sandboxId;
-    const previewUrl = `https://${sandbox.getHost(3000)}`;
-
     // Get files from Convex backup
     const files = await ctx.runQuery(api.files.listBySession, {
       sessionId: args.sessionId,
     });
 
-    // Restore files to new sandbox
-    let restoredFiles = 0;
-    for (const file of files) {
-      try {
-        const fullPath = `${PROJECT_DIR}/${file.path}`;
-        const dirPath = fullPath.substring(0, fullPath.lastIndexOf("/"));
-        if (dirPath) {
-          await sandbox.commands.run(`mkdir -p ${dirPath}`);
-        }
-        await sandbox.files.write(fullPath, file.content);
-        restoredFiles++;
-        console.log(`Restored: ${file.path}`);
-      } catch (error) {
-        console.error(`Failed to restore ${file.path}: ${error}`);
-      }
-    }
-
-    console.log(`Sandbox recreated: ${sandboxId}, restored ${restoredFiles} files`);
-
-    // Restore .env.local with Supabase credentials if connected
-    const supabaseStatus = await ctx.runQuery(api.sessions.getSupabaseStatus, { id: args.sessionId });
-    if (supabaseStatus?.supabaseConnected && supabaseStatus?.supabaseUrl && supabaseStatus?.supabaseAnonKey) {
-      await sandbox.files.write(
-        `${PROJECT_DIR}/.env.local`,
-        `NEXT_PUBLIC_SUPABASE_URL=${supabaseStatus.supabaseUrl}\nNEXT_PUBLIC_SUPABASE_ANON_KEY=${supabaseStatus.supabaseAnonKey}\n`
-      );
-      console.log("[recreate] Restored .env.local with Supabase credentials");
-    }
-
-    // Run npm install to restore packages
-    console.log(`[recreate] Running npm install...`);
-    try {
-      let installResult = await sandbox.commands.run("npm install", { cwd: PROJECT_DIR });
-      if (installResult.exitCode !== 0 && installResult.stderr.includes("ERESOLVE")) {
-        installResult = await sandbox.commands.run("npm install --legacy-peer-deps", { cwd: PROJECT_DIR });
-      }
-    } catch (installError) {
-      console.warn(`[recreate] npm install error (non-fatal): ${installError}`);
-    }
-
-    // Restart Next.js dev server for clean compilation with restored files
-    console.log(`[recreate] Restarting dev server for clean compilation...`);
-    try {
-      await sandbox.commands.run(`pkill -f "next" || true`);
-    } catch {
-      // pkill may throw due to signal termination — safe to ignore
-    }
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    try {
-      await sandbox.commands.run(`cd ${PROJECT_DIR} && npm run dev > /tmp/next-dev.log 2>&1 &`, { timeoutMs: 5000 });
-    } catch {
-      // Background process launch may throw — safe to ignore
-    }
-    await new Promise((resolve) => setTimeout(resolve, 8000));
-
-    // Update session with new sandbox info
-    await ctx.runMutation(api.sessions.update, {
-      id: args.sessionId,
-      sandboxId,
-      previewUrl,
-    });
-
-    return { sandboxId, previewUrl, restoredFiles };
+    const result = await createSandboxWithFiles(ctx, args.sessionId, files, "recreate");
+    return { sandboxId: result.sandboxId, previewUrl: result.previewUrl, restoredFiles: result.restoredFiles };
   },
 });
 
@@ -392,10 +371,17 @@ export const recreate = action({
  */
 export const runCommand = action({
   args: {
+    sessionId: v.id("sessions"),
     sandboxId: v.string(),
     command: v.string(),
   },
-  handler: async (_, args): Promise<{ exitCode: number; stdout: string; stderr: string }> => {
+  handler: async (ctx, args): Promise<{ exitCode: number; stdout: string; stderr: string }> => {
+    // Verify sandbox belongs to session
+    const session = await ctx.runQuery(api.sessions.get, { id: args.sessionId });
+    if (!session || session.sandboxId !== args.sandboxId) {
+      throw new Error("Sandbox does not belong to session");
+    }
+
     const sandbox = await Sandbox.connect(args.sandboxId);
     const result = await sandbox.commands.run(args.command);
     return {
@@ -412,10 +398,17 @@ export const runCommand = action({
  */
 export const keepAlive = action({
   args: {
+    sessionId: v.id("sessions"),
     sandboxId: v.string(),
   },
-  handler: async (_, args): Promise<{ success: boolean; error?: string }> => {
+  handler: async (ctx, args): Promise<{ success: boolean; error?: string }> => {
     try {
+      // Verify sandbox belongs to session
+      const session = await ctx.runQuery(api.sessions.get, { id: args.sessionId });
+      if (!session || session.sandboxId !== args.sandboxId) {
+        return { success: false, error: "Sandbox does not belong to session" };
+      }
+
       const sandbox = await Sandbox.connect(args.sandboxId);
       // Run a lightweight command to keep the sandbox alive
       const result = await sandbox.commands.run("echo keepalive");
@@ -469,93 +462,17 @@ export const extendTimeout = action({
       console.log(`[extendTimeout] Sandbox expired, recreating...`);
 
       try {
-        const newSandbox = await Sandbox.create(TEMPLATE, {
-          timeoutMs: TIMEOUT * 1000,
-        });
-
-        // Wait for sandbox dev server to be fully ready
-        console.log(`[extendTimeout] Waiting for dev server to start...`);
-        await new Promise((resolve) => setTimeout(resolve, 3000));
-
-        // Clean up default template files (so restored files take precedence)
-        await newSandbox.commands.run(`rm -f ${PROJECT_DIR}/app/page.tsx`);
-        await newSandbox.commands.run(`rm -f ${PROJECT_DIR}/app/layout.tsx`);
-        await newSandbox.commands.run(`rm -f ${PROJECT_DIR}/app/globals.css`);
-        await newSandbox.commands.run(`rm -f ${PROJECT_DIR}/components/ui/resizable.tsx`);
-
-        const newSandboxId = newSandbox.sandboxId;
-        const newPreviewUrl = `https://${newSandbox.getHost(3000)}`;
-
         // Get files from Convex backup
         const files = await ctx.runQuery(api.files.listBySession, {
           sessionId: args.sessionId,
         });
 
-        // Restore files to new sandbox
-        let restoredFiles = 0;
-        for (const file of files) {
-          try {
-            const fullPath = `${PROJECT_DIR}/${file.path}`;
-            const dirPath = fullPath.substring(0, fullPath.lastIndexOf("/"));
-            if (dirPath) {
-              await newSandbox.commands.run(`mkdir -p ${dirPath}`);
-            }
-            await newSandbox.files.write(fullPath, file.content);
-            restoredFiles++;
-          } catch (restoreError) {
-            console.error(`Failed to restore ${file.path}: ${restoreError}`);
-          }
-        }
-
-        console.log(`[extendTimeout] Sandbox recreated: ${newSandboxId}, restored ${restoredFiles} files`);
-
-        // Restore .env.local with Supabase credentials if connected
-        const supabaseStatus = await ctx.runQuery(api.sessions.getSupabaseStatus, { id: args.sessionId });
-        if (supabaseStatus?.supabaseConnected && supabaseStatus?.supabaseUrl && supabaseStatus?.supabaseAnonKey) {
-          await newSandbox.files.write(
-            `${PROJECT_DIR}/.env.local`,
-            `NEXT_PUBLIC_SUPABASE_URL=${supabaseStatus.supabaseUrl}\nNEXT_PUBLIC_SUPABASE_ANON_KEY=${supabaseStatus.supabaseAnonKey}\n`
-          );
-          console.log("[extendTimeout] Restored .env.local with Supabase credentials");
-        }
-
-        // Run npm install to restore packages
-        console.log(`[extendTimeout] Running npm install...`);
-        try {
-          let installResult = await newSandbox.commands.run("npm install", { cwd: PROJECT_DIR });
-          if (installResult.exitCode !== 0 && installResult.stderr.includes("ERESOLVE")) {
-            installResult = await newSandbox.commands.run("npm install --legacy-peer-deps", { cwd: PROJECT_DIR });
-          }
-        } catch (installError) {
-          console.warn(`[extendTimeout] npm install error (non-fatal): ${installError}`);
-        }
-
-        // Restart Next.js dev server for clean compilation with restored files
-        console.log(`[extendTimeout] Restarting dev server for clean compilation...`);
-        try {
-          await newSandbox.commands.run(`pkill -f "next" || true`);
-        } catch {
-          // pkill may throw due to signal termination — safe to ignore
-        }
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-        try {
-          await newSandbox.commands.run(`cd ${PROJECT_DIR} && npm run dev > /tmp/next-dev.log 2>&1 &`, { timeoutMs: 5000 });
-        } catch {
-          // Background process launch may throw — safe to ignore
-        }
-        await new Promise((resolve) => setTimeout(resolve, 8000));
-
-        // Update session with new sandbox info
-        await ctx.runMutation(api.sessions.update, {
-          id: args.sessionId,
-          sandboxId: newSandboxId,
-          previewUrl: newPreviewUrl,
-        });
+        const result = await createSandboxWithFiles(ctx, args.sessionId, files, "extendTimeout");
 
         return {
           success: true,
-          sandboxId: newSandboxId,
-          previewUrl: newPreviewUrl,
+          sandboxId: result.sandboxId,
+          previewUrl: result.previewUrl,
           wasRecreated: true,
         };
       } catch (createError) {
@@ -572,10 +489,17 @@ export const extendTimeout = action({
  */
 export const close = action({
   args: {
+    sessionId: v.id("sessions"),
     sandboxId: v.string(),
   },
-  handler: async (_, args): Promise<{ success: boolean }> => {
+  handler: async (ctx, args): Promise<{ success: boolean }> => {
     try {
+      // Verify sandbox belongs to session
+      const session = await ctx.runQuery(api.sessions.get, { id: args.sessionId });
+      if (!session || session.sandboxId !== args.sandboxId) {
+        return { success: false };
+      }
+
       const sandbox = await Sandbox.connect(args.sandboxId);
       await sandbox.kill();
       console.log(`Sandbox closed: ${args.sandboxId}`);

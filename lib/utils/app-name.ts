@@ -142,6 +142,10 @@ export function sanitizeAppName(input: string): string {
   name = name.replace(/-+/g, "-");
   // Remove leading/trailing hyphens
   name = name.replace(/^-|-$/g, "");
+  // Strip leading digits — isValidAppName requires [a-z] start
+  name = name.replace(/^[0-9]+[-]?/, "");
+  // Re-strip leading/trailing hyphens after digit removal
+  name = name.replace(/^-|-$/g, "");
 
   if (!name) {
     return "nextjs-app";

@@ -1,5 +1,6 @@
 "use client";
 
+import React from "react";
 import {
   ChevronRight,
   ChevronDown,
@@ -62,7 +63,7 @@ function FileIconComponent({
   }
 }
 
-export function FileTreeNode({
+export const FileTreeNode = React.memo(function FileTreeNode({
   node,
   selectedPath,
   expandedPaths,
@@ -136,4 +137,4 @@ export function FileTreeNode({
       )}
     </div>
   );
-}
+});

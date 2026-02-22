@@ -23,9 +23,13 @@ export function CodeEditor({
   const [copied, setCopied] = useState(false);
 
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(code);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard API may fail in insecure contexts or when permission denied
+    }
   };
 
   const handleDownload = () => {
@@ -48,6 +52,7 @@ export function CodeEditor({
 
         <div className="flex items-center gap-2">
           <button
+            type="button"
             onClick={handleCopy}
             className="flex items-center gap-1.5 px-2 py-1 text-xs text-zinc-400 hover:text-white hover:bg-zinc-800 rounded transition-colors"
           >
@@ -59,6 +64,7 @@ export function CodeEditor({
             {copied ? "Copied!" : "Copy"}
           </button>
           <button
+            type="button"
             onClick={handleDownload}
             className="flex items-center gap-1.5 px-2 py-1 text-xs text-zinc-400 hover:text-white hover:bg-zinc-800 rounded transition-colors"
           >
@@ -72,7 +78,7 @@ export function CodeEditor({
       <div className="flex-1">
         <Editor
           height="100%"
-          defaultLanguage={detectedLanguage}
+          language={detectedLanguage}
           value={code}
           onChange={(value) => onChange?.(value || "")}
           theme="vs-dark"

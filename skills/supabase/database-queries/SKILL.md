@@ -22,25 +22,65 @@ Only use Supabase when architecture.md has a DATABASE section.
 ⚠️ **MANDATORY**: When architecture.md has a DATABASE section, you MUST create `schema.sql` in the project root BEFORE any component files.
 
 - **schema.sql is the PRIMARY deliverable** — without it, the auto-execution pipeline has nothing to execute and the database will be empty. All CRUD operations will fail silently.
-- **Create schema.sql BEFORE `lib/supabase.ts`** — the schema defines what the client will query.
+- **Create schema.sql BEFORE `lib/supabase/client.ts`** — the schema defines what the client will query.
 - **Every table in the DATABASE section** MUST have a corresponding `CREATE TABLE IF NOT EXISTS` statement in schema.sql.
 
 ### File Setup
 
-**1. lib/supabase.ts - Client Setup:**
-
 ⚠️ **CRITICAL: NEVER hardcode Supabase URL or anon key.** The URL and key MUST come from environment variables. NEVER use string literals like `'https://xxx.supabase.co'` or paste actual keys.
 
+**1. lib/supabase/client.ts — for Client Components ('use client'):**
+
 ```typescript
-import { createClient } from '@supabase/supabase-js'
+import { createBrowserClient } from '@supabase/ssr'
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-
-export const supabase = createClient(supabaseUrl, supabaseAnonKey)
+export function createClient() {
+  return createBrowserClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  )
+}
 ```
 
-**2. .env.local.example - Template (documentation only):**
+**2. lib/supabase/server.ts — for Server Components, Route Handlers, Server Actions:**
+
+```typescript
+import { createServerClient } from '@supabase/ssr'
+import { cookies } from 'next/headers'
+
+export async function createClient() {
+  const cookieStore = await cookies()
+  return createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        getAll() { return cookieStore.getAll() },
+        setAll(cookiesToSet) {
+          try {
+            cookiesToSet.forEach(({ name, value, options }) =>
+              cookieStore.set(name, value, options)
+            )
+          } catch { /* Server Components can't write cookies — middleware handles it */ }
+        },
+      },
+    }
+  )
+}
+```
+
+**Usage in components:**
+```typescript
+// In 'use client' components:
+import { createClient } from '@/lib/supabase/client'
+const supabase = createClient()
+
+// In server components, route handlers, server actions:
+import { createClient } from '@/lib/supabase/server'
+const supabase = await createClient()
+```
+
+**3. .env.local.example - Template (documentation only):**
 
 ```env
 NEXT_PUBLIC_SUPABASE_URL=your_supabase_url
@@ -136,6 +176,90 @@ const { error } = await supabase
 
 > DELETE operations require a matching DELETE RLS policy on the table. If delete fails silently, check that a DELETE policy exists in schema.sql.
 
+### Relationship Queries (Foreign Key JOINs)
+
+When schema.sql has foreign keys, use PostgREST embedded select syntax to fetch related data in a single query:
+
+```typescript
+// ❌ NEVER JOIN auth.users — the auth schema is NOT accessible via PostgREST REST API
+// assignee:assignee_id (id, email)  ← THIS WILL ALWAYS RETURN NULL
+// reporter:reporter_id (id, email, raw_user_meta_data)  ← THIS WILL ALSO RETURN NULL
+
+// ✅ Instead, create a `profiles` table in public schema (see auth-setup skill)
+// Then join profiles:
+
+// Fetch projects WITH their workspace data
+// FK: projects.workspace_id -> workspaces.id
+const { data, error } = await supabase
+  .from('projects')
+  .select(`
+    *,
+    workspace:workspace_id (id, name, slug)
+  `)
+
+// Fetch issues WITH assignee (from profiles table) and project info
+// FK: issues.assignee_id -> profiles.id, issues.project_id -> projects.id
+const { data, error } = await supabase
+  .from('issues')
+  .select(`
+    *,
+    assignee:assignee_id (id, display_name, avatar_url),
+    project:project_id (id, name)
+  `)
+  .eq('project_id', projectId)
+  .order('created_at', { ascending: false })
+
+// Fetch single item with all relationships
+const { data, error } = await supabase
+  .from('issues')
+  .select(`
+    *,
+    assignee:assignee_id (id, display_name, avatar_url),
+    reporter:reporter_id (id, display_name, avatar_url),
+    project:project_id (id, name)
+  `)
+  .eq('id', issueId)
+  .single()
+```
+
+**Syntax: `alias:fk_column (columns)`**
+- `alias` — the field name in the returned object (e.g., `workspace`)
+- `fk_column` — the foreign key column on the current table (e.g., `workspace_id`)
+- `(columns)` — which columns to select from the related table
+
+**TypeScript interfaces for relationship data:**
+
+```typescript
+// In types/index.ts — add optional fields for embedded relations
+interface Profile {
+  id: string
+  display_name: string | null
+  avatar_url: string | null
+  email: string | null
+}
+
+interface Project {
+  id: string
+  created_at: string
+  workspace_id: string         // FK column (always present)
+  name: string
+  // ... other direct columns
+  workspace?: Workspace        // Embedded data (present when selected with select())
+}
+
+interface Issue {
+  id: string
+  created_at: string
+  project_id: string
+  assignee_id: string | null
+  // ... other direct columns
+  project?: Project            // Embedded relation
+  assignee?: Profile           // From profiles table (NOT auth.users)
+}
+```
+
+> **Rule**: Use embedded selects instead of separate queries. One `.select('*, relation:fk(cols)')` is faster and simpler than two sequential fetches.
+
 ### Data Fetching in Components
 
 Use 'use client' + useState + useEffect for fetching:
@@ -144,7 +268,7 @@ Use 'use client' + useState + useEffect for fetching:
 'use client'
 
 import { useState, useEffect } from 'react'
-import { supabase } from '@/lib/supabase'
+import { createClient } from '@/lib/supabase/client'
 
 interface Todo {
   id: string
@@ -157,6 +281,7 @@ export function TodoList() {
   const [todos, setTodos] = useState<Todo[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const supabase = createClient()
 
   useEffect(() => {
     fetchTodos()
@@ -261,7 +386,11 @@ async function safeFetch(tableName: string) {
 
 ### Database Readiness Pattern
 
-schema.sql is auto-executed after code generation. During the brief window before execution completes, queries will fail with "relation does not exist" (code 42P01). Use this pattern to handle it gracefully:
+schema.sql is auto-executed after code generation. During the brief window before execution completes, queries will fail with either:
+- **`42P01`** — PostgreSQL: "relation does not exist" (table hasn't been created yet)
+- **PostgREST schema cache miss** — "Could not find the table in the schema cache" (table exists but PostgREST hasn't refreshed)
+
+Use this pattern to handle BOTH error types gracefully:
 
 ```tsx
 const [data, setData] = useState<Item[]>([])
@@ -277,8 +406,10 @@ async function fetchData() {
     .order('created_at', { ascending: false })
 
   if (error) {
-    if (error.code === '42P01') {
-      // Table doesn't exist yet — schema.sql is still being executed
+    // Two possible "table not ready" errors:
+    // 1. 42P01 = PostgreSQL hasn't created the table yet
+    // 2. "schema cache" = PostgREST hasn't picked up new tables yet
+    if (error.code === '42P01' || error.message?.includes('schema cache')) {
       setDbReady(false)
       setTimeout(() => {
         setDbReady(true)
@@ -303,14 +434,26 @@ if (error) return <div className="text-red-500">Error: {error}</div>
 
 Use this pattern in the PRIMARY data-fetching component (the one that loads on page mount). Secondary components that only write data (forms, buttons) don't need it — they'll work once the primary component confirms DB readiness.
 
+> **Tip**: schema.sql should end with `NOTIFY pgrst, 'reload schema';` to force PostgREST to detect new tables immediately. Without this, the API may return "table not found" for up to 2 minutes.
+
 ### Common Supabase Errors
 
-**Table not found (relation does not exist):**
-This means schema.sql hasn't been executed yet. The auto-execution pipeline handles this automatically. Use the Database Readiness Pattern above to retry automatically. If the error persists after 30 seconds, the user needs to run schema.sql manually in the Supabase SQL Editor.
+**Table not found — two different errors:**
+
+Both mean the table isn't queryable yet. Use the Database Readiness Pattern above to retry automatically.
 
 ```typescript
-// Error: {message: 'relation "public.posts" does not exist', code: '42P01'}
-// FIX: Run schema.sql in Supabase SQL Editor
+// Error 1: PostgreSQL — table hasn't been created yet
+// {message: 'relation "public.posts" does not exist', code: '42P01'}
+
+// Error 2: PostgREST — table exists but schema cache hasn't refreshed
+// {message: 'Could not find the table \'public.posts\' in the schema cache', code: ''}
+
+// BOTH are caught by:
+if (error.code === '42P01' || error.message?.includes('schema cache')) {
+  // Retry after 3 seconds
+}
+// If the error persists after 30 seconds, run schema.sql manually in the Supabase SQL Editor.
 ```
 
 **RLS blocks access (new row violates policy):**
@@ -335,10 +478,11 @@ Not an error — just empty results. This happens when SELECT policy filters out
 'use client'
 
 import { useEffect, useState } from 'react'
-import { supabase } from '@/lib/supabase'
+import { createClient } from '@/lib/supabase/client'
 
 export function RealtimeTodos() {
   const [todos, setTodos] = useState<Todo[]>([])
+  const supabase = createClient()
 
   useEffect(() => {
     // Initial fetch
@@ -372,6 +516,25 @@ export function RealtimeTodos() {
   // ... rest of component
 }
 ```
+
+### Index Recommendations
+
+Always create indexes on:
+- **Foreign key columns**: Every `_id` column that references another table (e.g., `workspace_id`, `project_id`, `user_id`)
+- **Columns used in `.eq()` filters**: If you frequently filter by a column (e.g., `status`, `published`), index it
+- **Columns used in `.order()` sorts**: Especially `created_at` for chronological listing
+- **Columns referenced in RLS policies**: See the `rls-policies` skill for details
+
+```sql
+-- Add to schema.sql after all policies
+create index if not exists idx_todos_user_id on todos(user_id);
+create index if not exists idx_todos_created_at on todos(created_at desc);
+create index if not exists idx_projects_workspace_id on projects(workspace_id);
+create index if not exists idx_issues_project_id on issues(project_id);
+create index if not exists idx_issues_assignee_id on issues(assignee_id);
+```
+
+> **Performance tip**: Wrap `auth.uid()` calls in `(select auth.uid())` in RLS policies for ~95% faster evaluation. See the `rls-policies` skill for the full pattern.
 
 ### Column Consistency Rules
 
@@ -419,5 +582,8 @@ const [todos, setTodos] = useState([
 8. **NEVER hardcode Supabase URL or anon key** — always use process.env
 9. **Column names in code MUST match column names in schema.sql** exactly
 10. **Initialize DB-backed state with empty array `[]`** — data loads via useEffect, never fake demo objects
-11. **Handle "table not found" (42P01) gracefully** — schema.sql is auto-executed after code generation. Use the Database Readiness Pattern to show "Setting up database..." and auto-retry, not a raw error message
+11. **Handle "table not found" gracefully** — catch BOTH `42P01` (PostgreSQL) AND `error.message?.includes('schema cache')` (PostgREST cache miss). Use the Database Readiness Pattern to show "Setting up database..." and auto-retry, not a raw error message
 12. **Column names in code MUST match schema.sql exactly** — if schema.sql says `created_at`, code must use `created_at` (not `createdAt`). If schema.sql says `user_id`, code must use `user_id` (not `userId`). TypeScript interfaces map 1:1 to SQL column names
+13. **For foreign key relationships, use PostgREST embedded select** — `.select('*, alias:fk_column(columns)')` instead of separate queries. Add optional relationship fields to TypeScript interfaces in `types/index.ts`
+14. **NEVER join auth.users via PostgREST** — the `auth` schema is not exposed via the REST API. Create a `profiles` table in the `public` schema and join that instead. See the `auth-setup` skill for the profiles table pattern
+15. **Always create indexes for FK columns in schema.sql** — every `_id` column referencing another table should have a corresponding `CREATE INDEX IF NOT EXISTS` statement. Without indexes, queries with RLS policies cause full table scans

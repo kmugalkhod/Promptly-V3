@@ -23,6 +23,16 @@ export default defineSchema({
     )),
     schemaError: v.optional(v.string()),
     schemaTablesCreated: v.optional(v.number()), // Verified table count after health check
+    // Coder validation status (self-healing loop)
+    coderStatus: v.optional(v.union(
+      v.literal("generating"),
+      v.literal("validating"),
+      v.literal("fixing"),
+      v.literal("success"),
+      v.literal("error")
+    )),
+    coderRetryCount: v.optional(v.number()),
+    coderError: v.optional(v.string()),
     architecture: v.optional(v.string()), // architecture.md content
     status: v.union(
       v.literal("new"),
