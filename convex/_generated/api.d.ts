@@ -8,6 +8,7 @@
  * @module
  */
 
+import type * as constants from "../constants.js";
 import type * as embeddings from "../embeddings.js";
 import type * as files from "../files.js";
 import type * as generate from "../generate.js";
@@ -23,6 +24,7 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  constants: typeof constants;
   embeddings: typeof embeddings;
   files: typeof files;
   generate: typeof generate;

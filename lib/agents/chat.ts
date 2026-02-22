@@ -20,7 +20,7 @@ import { validateGlobalsCss } from "../prompts";
 import { getSkillsMetadata, formatSkillsForPrompt, loadSkill } from "./skills";
 
 // Use Sonnet for better quality edits (Haiku loses code too often)
-const MODEL_NAME = "claude-sonnet-4-20250514";
+const MODEL_NAME = "claude-sonnet-4-6";
 const MAX_ITERATIONS = 15;
 
 /**
@@ -47,6 +47,8 @@ const BLOCKED_FILES = new Set([
   "package-lock.json",
   "tsconfig.json",
   "lib/utils.ts",
+  ".env.local",
+  ".env.local.example",
 ]);
 
 /**
@@ -103,8 +105,23 @@ The following files are locked and CANNOT be written to. Any attempt will be rej
 - package.json / package-lock.json — use install_packages tool instead
 - tsconfig.json — TypeScript config
 - lib/utils.ts — shared utility (cn function)
+- .env.local / .env.local.example — auto-provisioned with real credentials
 
 If the user asks to modify these, explain WHY you can't and suggest the correct alternative.
+
+## Pre-installed Components — DO NOT Recreate
+
+ALL shadcn/ui components are pre-installed in the sandbox (components/ui/*.tsx).
+NEVER create or overwrite files in components/ui/ — just import them:
+- import { Button } from "@/components/ui/button"
+- import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
+- etc.
+
+Use Tailwind theme classes for colors — NEVER use explicit CSS variable syntax like bg-[var(--varname)]:
+- Use bg-primary, NOT explicit --color-primary variable
+- Use text-foreground, NOT explicit --color-text variable
+- Use bg-card, NOT explicit --color-surface variable
+- Use text-muted-foreground, NOT explicit --color-muted variable
 
 ## Skills — On-Demand Expertise
 
@@ -112,9 +129,34 @@ When you receive a modification request, load the \`understand-request\` skill F
 
 {ARCHITECTURE_CONTEXT}
 
+## Database Awareness
+
+- **schema.sql is auto-executed** after code generation AND after any chat modification. Changes to schema.sql are automatically applied to the database.
+- There are TWO "table not found" errors: 42P01 (PostgreSQL) and "Could not find the table in the schema cache" (PostgREST). BOTH are transient during initial setup.
+- **NEVER modify .env.local** — it's auto-provisioned with real Supabase credentials.
+- **NEVER join auth.users** via PostgREST — use the profiles table instead.
+
+### Schema Modification Rules
+
+**When the user EXPLICITLY asks to modify the database** (add column, add table, fix RLS, etc.):
+1. Load the \`modify-schema\` skill for detailed guidance
+2. Read current schema.sql with read_file BEFORE making changes
+3. Modify schema.sql following the skill's additive patterns
+4. Also update TypeScript interfaces and component queries to match
+5. schema.sql will be auto-executed after your changes — no manual step needed
+
+**When you see "table not found" or "schema cache" errors** (transient):
+- Do NOT modify schema.sql in response to these errors
+- Respond: "The database is still being set up. Tables will be available shortly — please refresh."
+
+**NEVER do these to schema.sql:**
+- Do NOT DROP TABLE or DROP COLUMN unless user explicitly asks to remove data
+- Do NOT rewrite schema.sql from scratch — always modify the existing file
+- Do NOT remove existing CREATE TABLE, RLS, or policy statements
+
 ## Project Stack
 
-- Next.js 14+ (App Router), TypeScript, Tailwind CSS v4, shadcn/ui
+- Next.js 16+ (App Router), TypeScript, Tailwind CSS v4, shadcn/ui
 - Load relevant skills for detailed patterns on these technologies.
 
 ## Current Project Files
@@ -198,6 +240,27 @@ export async function runChatAgent(
           if (shrinkPercent > 40 && oldLines > 10) {
             console.warn(`[chat] WARNING: ${path} shrunk by ${shrinkPercent.toFixed(0)}% (${oldLines} → ${newLines} lines)`);
             return `WARNING: Your edit would remove ${shrinkPercent.toFixed(0)}% of the file (${oldLines} → ${newLines} lines). This seems like you're losing existing code. Please rewrite the file including ALL existing code, only changing what was requested. Don't remove imports, functions, styles, or components that weren't asked to be removed.`;
+          }
+        }
+
+        // Warn on destructive SQL operations in schema.sql
+        if (path === "schema.sql" && existingContent) {
+          const destructivePatterns = [
+            /DROP\s+TABLE/i,
+            /DROP\s+COLUMN/i,
+            /ALTER\s+TABLE\s+\w+\s+DROP/i,
+            /TRUNCATE/i,
+          ];
+          const hasDestructive = destructivePatterns.some(p => p.test(content));
+          if (hasDestructive) {
+            console.warn(`[chat] WARNING: schema.sql contains destructive SQL operations`);
+            return `WARNING: Your schema.sql modification contains destructive operations (DROP TABLE, DROP COLUMN, or TRUNCATE). These operations will permanently delete data. If the user explicitly requested data removal, rewrite with this exact change. Otherwise, use additive patterns only (ADD COLUMN IF NOT EXISTS, CREATE TABLE IF NOT EXISTS).`;
+          }
+
+          // Ensure schema.sql ends with NOTIFY for PostgREST cache reload
+          if (!content.includes("NOTIFY pgrst")) {
+            console.warn(`[chat] WARNING: schema.sql missing NOTIFY pgrst statement`);
+            return `WARNING: schema.sql must end with "NOTIFY pgrst, 'reload schema';" to ensure PostgREST detects the changes. Add this as the last line.`;
           }
         }
 
@@ -388,11 +451,20 @@ export async function runChatAgent(
     if (architecture) {
       const tokens = extractDesignTokens(architecture);
       if (tokens) {
+        // Map architecture color keys to shadcn variable names
+        const shadcnNameMap: Record<string, string> = {
+          primary: "primary",
+          accent: "accent",
+          background: "background",
+          surface: "card",
+          text: "foreground",
+          muted: "muted-foreground",
+        };
         const colorEntries = Object.entries(tokens.colors.light)
-          .map(([key, val]) => `  --color-${key}: ${val}`)
+          .map(([key, val]) => `  --${shadcnNameMap[key] || key}: ${val}`)
           .join("\n");
         const darkColorEntries = Object.entries(tokens.colors.dark)
-          .map(([key, val]) => `  --color-${key}: ${val}`)
+          .map(([key, val]) => `  --${shadcnNameMap[key] || key}: ${val}`)
           .join("\n");
         architectureContext = `
 ## Current App Design Tokens (from architecture)
@@ -407,7 +479,7 @@ ${colorEntries}
 **Dark mode colors**:
 ${darkColorEntries}
 
-Use these exact values when fixing color/visibility issues. Reference them via CSS variables (e.g., \`text-[var(--color-text)]\`).`;
+Use Tailwind theme classes for these colors (e.g., \`text-foreground\`, \`bg-primary\`, \`bg-card\`, \`text-muted-foreground\`). Do NOT use explicit CSS variable syntax like bg-[var(--varname)].`;
       }
     }
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useCallback } from "react";
 import { Sparkles, User, Loader2 } from "lucide-react";
 import { StreamingMessage } from "./StreamingMessage";
 
@@ -21,11 +21,23 @@ export function MessageList({
   streamingContent,
   isLoading,
 }: MessageListProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const isNearBottomRef = useRef(true);
 
-  // Auto-scroll to bottom when new messages arrive
+  const handleScroll = useCallback(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const threshold = 100;
+    isNearBottomRef.current =
+      container.scrollHeight - container.scrollTop - container.clientHeight < threshold;
+  }, []);
+
+  // Auto-scroll only when user is near bottom
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (isNearBottomRef.current) {
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
   }, [messages, streamingContent]);
 
   if (messages.length === 0 && !streamingContent) {
@@ -48,7 +60,7 @@ export function MessageList({
   }
 
   return (
-    <div className="flex-1 overflow-y-auto p-4 space-y-4">
+    <div ref={containerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto p-4 space-y-4">
       {messages.map((message) => (
         <div key={message._id} className="flex gap-3">
           {/* Avatar */}

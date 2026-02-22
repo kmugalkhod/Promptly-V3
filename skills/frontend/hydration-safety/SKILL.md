@@ -204,7 +204,7 @@ Never put interactive elements inside each other — this causes hydration misma
 <button onClick={() => router.push('/page')}>Go to page</button>
 
 // ✅ CORRECT - style link as button
-<a href="/page" className="bg-[var(--color-primary)] px-4 py-2 rounded">Go to page</a>
+<a href="/page" className="bg-primary px-4 py-2 rounded">Go to page</a>
 ```
 
 ### RULES CHECKLIST

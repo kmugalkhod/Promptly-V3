@@ -23,7 +23,7 @@ export async function GET(request: NextRequest) {
 <p>Completing authorization...</p>
 <script>
 (function() {
-  var message = ${JSON.stringify({ code, state, error, errorDescription })};
+  var message = ${JSON.stringify({ code, state, error, errorDescription }).replace(/</g, '\\u003c')};
   if (window.opener) {
     window.opener.postMessage(
       { type: "supabase-oauth-callback", ...message },

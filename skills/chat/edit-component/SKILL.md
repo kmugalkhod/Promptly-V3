@@ -45,15 +45,17 @@ When you write a file, you MUST include ALL existing code that wasn't meant to b
 4. **write_file** with COMPLETE file content (all original code + your change)
 5. Verify nothing was accidentally removed
 
-### CSS Variable Usage
+### Tailwind Theme Class Usage
 
-When changing colors or visual properties, use CSS variables:
+When changing colors or visual properties, use Tailwind theme classes:
 ```
-bg-[var(--color-background)]    — page background
-bg-[var(--color-surface)]       — card background
-text-[var(--color-text)]        — main text
-text-[var(--color-muted)]       — subtle text
-text-[var(--color-primary)]     — accent text
-bg-[var(--color-primary)]       — accent background
-border-[var(--color-primary)]   — accent border
+bg-background         — page background
+bg-card               — card/section background
+text-foreground       — main text
+text-muted-foreground — subtle text
+text-primary          — accent text
+bg-primary            — accent background
+border-primary        — accent border
 ```
+
+**NEVER use explicit CSS variable syntax** (e.g., `bg-[var(--varname)]`). Use the Tailwind theme classes above.

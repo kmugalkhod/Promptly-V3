@@ -59,12 +59,12 @@ Always start with mobile styles, then add breakpoints for larger screens:
 
 ```tsx
 // Headline: small on mobile, large on desktop
-<h1 className="text-3xl md:text-5xl lg:text-7xl font-display font-bold text-[var(--color-text)]">
+<h1 className="text-3xl md:text-5xl lg:text-7xl font-display font-bold text-foreground">
   Welcome
 </h1>
 
 // Subheadline: responsive sizing
-<p className="text-lg md:text-xl lg:text-2xl text-[var(--color-muted)]">
+<p className="text-lg md:text-xl lg:text-2xl text-muted-foreground">
   Subtitle text here
 </p>
 
@@ -105,10 +105,10 @@ Always start with mobile styles, then add breakpoints for larger screens:
 
 ```tsx
 <section className="min-h-[60vh] md:min-h-[80vh] flex flex-col items-center justify-center text-center px-4 md:px-8">
-  <h1 className="font-display text-4xl md:text-6xl lg:text-7xl font-bold text-[var(--color-text)] mb-4 md:mb-6">
+  <h1 className="font-display text-4xl md:text-6xl lg:text-7xl font-bold text-foreground mb-4 md:mb-6">
     Ship Faster
   </h1>
-  <p className="text-lg md:text-xl text-[var(--color-muted)] max-w-xl md:max-w-2xl mb-6 md:mb-8">
+  <p className="text-lg md:text-xl text-muted-foreground max-w-xl md:max-w-2xl mb-6 md:mb-8">
     The tool that gets out of your way and helps you build better products.
   </p>
   <div className="flex flex-col sm:flex-row gap-3 md:gap-4">
@@ -143,13 +143,13 @@ Always start with mobile styles, then add breakpoints for larger screens:
 
 ```tsx
 // Card with stacked layout on mobile, horizontal on desktop
-<div className="flex flex-col md:flex-row bg-[var(--color-surface)] rounded-xl overflow-hidden">
+<div className="flex flex-col md:flex-row bg-card rounded-xl overflow-hidden">
   <div className="md:w-1/3">
     <img src={image} className="w-full h-48 md:h-full object-cover" />
   </div>
   <div className="p-4 md:p-6 md:w-2/3">
     <h3 className="text-xl md:text-2xl font-display">{title}</h3>
-    <p className="mt-2 text-[var(--color-muted)]">{description}</p>
+    <p className="mt-2 text-muted-foreground">{description}</p>
   </div>
 </div>
 ```

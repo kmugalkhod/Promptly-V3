@@ -11,13 +11,13 @@
 import { createAgent, tool, anthropicPromptCachingMiddleware } from "langchain";
 import { ChatAnthropic } from "@langchain/anthropic";
 import { z } from "zod";
-import { HumanMessage, SystemMessage, AIMessage } from "@langchain/core/messages";
+import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { ARCHITECTURE_PROMPT } from "../prompts";
 import { type SandboxActions } from "./tools";
 import type { AgentResult, ToolContext, ToolCall } from "./types";
 import { getSkillsMetadata, formatSkillsForPrompt, loadSkill } from "./skills";
 
-const MODEL_NAME = "claude-sonnet-4-20250514";
+const MODEL_NAME = "claude-sonnet-4-6";
 
 /**
  * Run the Architecture Agent to design app structure.
@@ -165,27 +165,3 @@ export async function runArchitectureAgent(
   }
 }
 
-/**
- * Create messages for a multi-turn architecture conversation.
- * Used for iterating on architecture design.
- */
-export function createArchitectureMessages(
-  requirements: string,
-  previousResponse?: string,
-  feedback?: string
-): (SystemMessage | HumanMessage | AIMessage)[] {
-  const messages: (SystemMessage | HumanMessage | AIMessage)[] = [
-    new SystemMessage(ARCHITECTURE_PROMPT),
-    new HumanMessage(`Design the architecture for: ${requirements}`),
-  ];
-
-  if (previousResponse) {
-    messages.push(new AIMessage(previousResponse));
-  }
-
-  if (feedback) {
-    messages.push(new HumanMessage(feedback));
-  }
-
-  return messages;
-}

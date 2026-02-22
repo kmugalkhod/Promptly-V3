@@ -27,6 +27,7 @@ When you receive a user's modification request, classify it:
 | Explain | "explain", "how does", "what does", "why" | `explain-code` |
 | State/Data | "state", "data", "fetch", "store" | `add-feature`, `state-management` |
 | Database | "save", "persist", "database", "supabase" | `add-feature`, `database-queries` |
+| Schema change | "add column", "add field", "add table", "new table", "modify schema", "fix RLS", "add policy", "drop column", "remove field" | `modify-schema`, `rls-policies`, `database-queries` |
 
 ### Workflow
 1. Read user message

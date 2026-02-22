@@ -16,7 +16,7 @@ import { validatePackageName, type SandboxActions } from "./tools";
 import type { AgentResult, ToolContext, ToolCall } from "./types";
 import { getSkillsMetadata, formatSkillsForPrompt, loadSkill } from "./skills";
 
-const MODEL_NAME = "claude-sonnet-4-20250514";
+const MODEL_NAME = "claude-sonnet-4-6";
 
 /**
  * Run the Coder Agent to implement architecture.
@@ -32,7 +32,10 @@ export async function runCoderAgent(
   previewUrl: string,
   context: ToolContext,
   sandboxActions: SandboxActions,
-  designTokensBlock?: string
+  designTokensBlock?: string,
+  schemaGenerated?: boolean,
+  errorFeedback?: string,
+  options?: { recursionLimit?: number; fixRecursionLimit?: number }
 ): Promise<AgentResult> {
   const toolCalls: ToolCall[] = [];
   const filesChanged: string[] = [];
@@ -41,39 +44,48 @@ export async function runCoderAgent(
   const skills = await getSkillsMetadata();
   const skillsSection = formatSkillsForPrompt(skills, "coder");
 
+  // Shared helper for write_file and update_file — validates, caches, writes, and tracks
+  async function performFileWrite(
+    file_path: string,
+    content: string,
+    toolName: "write_file" | "update_file"
+  ): Promise<string> {
+    try {
+      // Validate globals.css before writing (block v3 syntax)
+      if (file_path === "app/globals.css") {
+        const validationError = validateGlobalsCss(content);
+        if (validationError) return validationError;
+      }
+
+      context.files.set(file_path, content);
+      context.recentFiles = [
+        file_path,
+        ...context.recentFiles.filter((f) => f !== file_path),
+      ].slice(0, 10);
+
+      await sandboxActions.writeFile(file_path, content);
+
+      toolCalls.push({
+        name: toolName,
+        input: { file_path, content },
+        output: `Hot reload: ${file_path}`,
+      });
+
+      if (!filesChanged.includes(file_path)) {
+        filesChanged.push(file_path);
+      }
+
+      return `Hot reload: ${file_path}`;
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "Unknown error";
+      return `Failed to ${toolName === "write_file" ? "write" : "update"}: ${file_path} - ${msg}`;
+    }
+  }
+
   // Define tools using the langchain tool() function
   const writeFileTool = tool(
     async ({ file_path, content }: { file_path: string; content: string }) => {
-      try {
-        // Validate globals.css before writing (block v3 syntax)
-        if (file_path === "app/globals.css") {
-          const validationError = validateGlobalsCss(content);
-          if (validationError) return validationError;
-        }
-
-        context.files.set(file_path, content);
-        context.recentFiles = [
-          file_path,
-          ...context.recentFiles.filter((f) => f !== file_path),
-        ].slice(0, 10);
-
-        await sandboxActions.writeFile(file_path, content);
-
-        toolCalls.push({
-          name: "write_file",
-          input: { file_path, content },
-          output: `Hot reload: ${file_path}`,
-        });
-
-        if (!filesChanged.includes(file_path)) {
-          filesChanged.push(file_path);
-        }
-
-        return `Hot reload: ${file_path}`;
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : "Unknown error";
-        return `Failed to write: ${file_path} - ${msg}`;
-      }
+      return performFileWrite(file_path, content, "write_file");
     },
     {
       name: "write_file",
@@ -130,6 +142,7 @@ export async function runCoderAgent(
 
   const updateFileTool = tool(
     async ({ file_path, content }: { file_path: string; content: string }) => {
+      // Verify file exists before updating
       const exists = context.files.has(file_path);
       if (!exists) {
         try {
@@ -142,30 +155,7 @@ export async function runCoderAgent(
         }
       }
 
-      try {
-        context.files.set(file_path, content);
-        context.recentFiles = [
-          file_path,
-          ...context.recentFiles.filter((f) => f !== file_path),
-        ].slice(0, 10);
-
-        await sandboxActions.writeFile(file_path, content);
-
-        toolCalls.push({
-          name: "update_file",
-          input: { file_path, content },
-          output: `Hot reload: ${file_path}`,
-        });
-
-        if (!filesChanged.includes(file_path)) {
-          filesChanged.push(file_path);
-        }
-
-        return `Hot reload: ${file_path}`;
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : "Unknown error";
-        return `Failed to update: ${file_path} - ${msg}`;
-      }
+      return performFileWrite(file_path, content, "update_file");
     },
     {
       name: "update_file",
@@ -180,7 +170,7 @@ export async function runCoderAgent(
 
   const installPackagesTool = tool(
     async ({ packages }: { packages: string }) => {
-      const packageList = packages.trim().split(/\s+/);
+      const packageList = packages.trim().split(/\s+/).filter(Boolean);
       const invalid = packageList.filter(
         (p: string) => !validatePackageName(p)
       );
@@ -316,40 +306,58 @@ Before writing ANY code, find DESIGN_DIRECTION in architecture above and extract
 7. shadow_system → shadow classes
 8. radius_system → rounded classes\n`;
 
-    const userMessage = `Implement based on architecture:
+    const schemaBlock = schemaGenerated
+      ? `\n## SCHEMA ALREADY GENERATED
+schema.sql has been pre-generated, validated, and executed against Supabase.
+DO NOT create or modify schema.sql — it already exists and the database is ready.
+Use read_file to check schema.sql for exact table/column names before writing components.
+All tables referenced in the DATABASE section are confirmed to exist.\n`
+      : "";
+
+    // Build user message — first attempt vs fix retry
+    const userMessage = errorFeedback
+      ? errorFeedback  // Already formatted by formatCoderRetryPrompt
+      : `Implement based on architecture:
 
 ${architecture}
-${designSection}
+${designSection}${schemaBlock}
 ## FILE ORDER (MANDATORY):
-1. FIRST: CREATE app/globals.css with ACTUAL hex values from color_scheme (file does NOT exist yet)
-2. SECOND: CREATE app/layout.tsx with fonts from typography.pairing (file does NOT exist yet)
-3. THEN: components and pages using CSS variables
+1. FIRST: CREATE app/globals.css with design tokens (file does NOT exist yet)
+2. SECOND: CREATE app/layout.tsx with fonts (file does NOT exist yet)
+3. THEN: app components and pages using Tailwind theme classes
+
+## PRE-INSTALLED (DO NOT CREATE):
+- lib/utils.ts (cn utility) — already exists
+- components/ui/*.tsx (ALL shadcn components) — already pre-installed
+- Just import: import { Button } from "@/components/ui/button"
 
 ## VALIDATION:
-- If you use "bg-white" or "text-gray-500" → WRONG, use CSS variables
+- If you use "bg-white" or "text-gray-500" → WRONG, use Tailwind theme classes (bg-primary, text-foreground, bg-card)
 - If globals.css has "#______" placeholders → WRONG, fill in actual hex values
 - If layout.tsx uses Geist or Inter font when pairing specifies different → WRONG
+- If you create files in components/ui/ → WRONG, they are pre-installed
 
 The Next.js app is ALREADY SETUP in E2B sandbox.
 Check if PACKAGES section exists - install FIRST if needed.
 FILE PATHS:
-- app/globals.css (CREATE with design colors - does not exist yet!)
+- app/globals.css (CREATE with design tokens - does not exist yet!)
 - app/layout.tsx (CREATE with custom fonts - does not exist yet!)
 - app/page.tsx
-- components/Name.tsx
-- lib/utils.ts (DO NOT OVERWRITE - already has cn function)
+- components/Name.tsx (app-specific custom components only)
 - types/index.ts
 
 Preview is live at: ${previewUrl}`;
 
-    // Run the agent with increased recursion limit
-    // Default is 25, but coder needs more for creating multiple files
+    // Run the agent with dynamic recursion limit based on architecture complexity
+    // Fix mode uses lower limit since it only needs to read + fix specific files
+    const baseLimit = options?.recursionLimit ?? 150;
+    const fixLimit = options?.fixRecursionLimit ?? 50;
     const result = await agent.invoke(
       {
         messages: [{ role: "user", content: userMessage }],
       },
       {
-        recursionLimit: 75, // Increased from default 25
+        recursionLimit: errorFeedback ? fixLimit : baseLimit,
       }
     );
 
@@ -380,6 +388,26 @@ Preview is live at: ${previewUrl}`;
   } catch (error) {
     const errorMessage =
       error instanceof Error ? error.message : "Unknown error";
+
+    // Detect recursion limit exhaustion — agent ran out of steps, not a crash
+    const isRecursionExhaustion =
+      error instanceof Error && (
+        error.name === "GraphRecursionError" ||
+        errorMessage.includes("Recursion limit") ||
+        errorMessage.includes("recursion limit")
+      );
+
+    if (isRecursionExhaustion) {
+      console.warn(`[coder] Recursion limit exhausted after generating ${filesChanged.length} files`);
+      return {
+        response: `Generated ${filesChanged.length} files before reaching the iteration limit.`,
+        toolCalls,
+        filesChanged,
+        error: `recursion_exhaustion:${filesChanged.length}`,
+      };
+    }
+
+    console.error("[coder] Error:", errorMessage);
     return {
       response: "",
       toolCalls,

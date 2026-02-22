@@ -5,18 +5,19 @@ const SUPABASE_API_BASE_URL = "https://api.supabase.com/v1";
 /**
  * Fetch the user's Supabase projects and optionally get API keys for a specific project.
  *
- * GET /api/auth/supabase/projects?access_token=...
+ * GET /api/auth/supabase/projects (Authorization: Bearer ...)
  *   → Returns list of projects
  *
- * GET /api/auth/supabase/projects?access_token=...&projectRef=...
+ * GET /api/auth/supabase/projects?projectRef=... (Authorization: Bearer ...)
  *   → Returns project URL + anon key for the specified project
  */
 export async function GET(request: NextRequest) {
-  const accessToken = request.nextUrl.searchParams.get("access_token");
+  const authHeader = request.headers.get("Authorization");
+  const accessToken = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
   const projectRef = request.nextUrl.searchParams.get("projectRef");
 
   if (!accessToken) {
-    return NextResponse.json({ error: "Missing access_token" }, { status: 400 });
+    return NextResponse.json({ error: "Missing Authorization header" }, { status: 400 });
   }
 
   const headers = { Authorization: `Bearer ${accessToken}` };
@@ -36,6 +37,14 @@ export async function GET(request: NextRequest) {
     }
 
     const apiKeys = await response.json();
+
+    if (!Array.isArray(apiKeys)) {
+      return NextResponse.json(
+        { error: "Unexpected API keys response format" },
+        { status: 502 }
+      );
+    }
+
     const anonKey = (apiKeys as Array<{ name: string; api_key: string }>).find(
       (k) => k.name === "anon" || k.name === "publishable"
     );
@@ -69,6 +78,13 @@ export async function GET(request: NextRequest) {
   }
 
   const projects = await response.json();
+
+  if (!Array.isArray(projects)) {
+    return NextResponse.json(
+      { error: "Unexpected projects response format" },
+      { status: 502 }
+    );
+  }
 
   return NextResponse.json({
     projects: (

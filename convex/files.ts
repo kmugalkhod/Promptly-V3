@@ -1,6 +1,33 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 
+const MAX_PATH_LENGTH = 500;
+const MAX_CONTENT_LENGTH = 1_000_000; // 1MB
+
+function sanitizePath(inputPath: string): string {
+  const normalized = inputPath.replace(/\\/g, "/");
+
+  if (normalized.includes("..")) {
+    throw new Error(`Invalid path: directory traversal not allowed: ${inputPath}`);
+  }
+
+  if (normalized.startsWith("/")) {
+    throw new Error(`Invalid path: absolute paths not allowed: ${inputPath}`);
+  }
+
+  const cleaned = normalized.replace(/^\/+|\/+$/g, "");
+
+  if (cleaned.length === 0) {
+    throw new Error("Invalid path: empty path");
+  }
+
+  if (cleaned.length > MAX_PATH_LENGTH) {
+    throw new Error(`Invalid path: exceeds maximum length (${MAX_PATH_LENGTH} chars)`);
+  }
+
+  return cleaned;
+}
+
 // Create or update file
 export const upsert = mutation({
   args: {
@@ -9,11 +36,17 @@ export const upsert = mutation({
     content: v.string(),
   },
   handler: async (ctx, args) => {
+    const path = sanitizePath(args.path);
+
+    if (args.content.length > MAX_CONTENT_LENGTH) {
+      throw new Error(`File content exceeds maximum length (${MAX_CONTENT_LENGTH} chars)`);
+    }
+
     // Check if file exists
     const existing = await ctx.db
       .query("files")
       .withIndex("by_session_path", (q) =>
-        q.eq("sessionId", args.sessionId).eq("path", args.path)
+        q.eq("sessionId", args.sessionId).eq("path", path)
       )
       .first();
 
@@ -28,7 +61,7 @@ export const upsert = mutation({
       // Create new file
       return await ctx.db.insert("files", {
         sessionId: args.sessionId,
-        path: args.path,
+        path,
         content: args.content,
         createdAt: Date.now(),
         updatedAt: Date.now(),
@@ -55,19 +88,27 @@ export const getByPath = query({
     path: v.string(),
   },
   handler: async (ctx, args) => {
+    const path = sanitizePath(args.path);
     return await ctx.db
       .query("files")
       .withIndex("by_session_path", (q) =>
-        q.eq("sessionId", args.sessionId).eq("path", args.path)
+        q.eq("sessionId", args.sessionId).eq("path", path)
       )
       .first();
   },
 });
 
-// Delete file by ID
+// Delete file by ID (with session ownership check)
 export const remove = mutation({
-  args: { id: v.id("files") },
+  args: {
+    id: v.id("files"),
+    sessionId: v.id("sessions"),
+  },
   handler: async (ctx, args) => {
+    const file = await ctx.db.get(args.id);
+    if (!file || file.sessionId !== args.sessionId) {
+      throw new Error("File not found or access denied");
+    }
     await ctx.db.delete(args.id);
   },
 });
@@ -79,10 +120,11 @@ export const removeByPath = mutation({
     path: v.string(),
   },
   handler: async (ctx, args) => {
+    const path = sanitizePath(args.path);
     const file = await ctx.db
       .query("files")
       .withIndex("by_session_path", (q) =>
-        q.eq("sessionId", args.sessionId).eq("path", args.path)
+        q.eq("sessionId", args.sessionId).eq("path", path)
       )
       .first();
 

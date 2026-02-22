@@ -1,6 +1,36 @@
 import { mutation, query, internalMutation } from "./_generated/server";
 import { v } from "convex/values";
 
+const MAX_MESSAGE_LENGTH = 100_000; // 100KB
+
+// Shared handler for creating messages (used by both public and internal mutations)
+const messageCreateHandler = async (
+  ctx: { db: import("./_generated/server").MutationCtx["db"] },
+  args: { sessionId: import("./_generated/dataModel").Id<"sessions">; role: "user" | "assistant"; content: string }
+) => {
+  if (args.content.length > MAX_MESSAGE_LENGTH) {
+    throw new Error("Message content exceeds maximum length (100KB)");
+  }
+
+  const session = await ctx.db.get(args.sessionId);
+  if (!session) {
+    throw new Error("Session not found");
+  }
+
+  const messageId = await ctx.db.insert("messages", {
+    sessionId: args.sessionId,
+    role: args.role,
+    content: args.content,
+    createdAt: Date.now(),
+  });
+
+  if (session.status === "new") {
+    await ctx.db.patch(args.sessionId, { status: "active" });
+  }
+
+  return messageId;
+};
+
 // Add message to session
 export const create = mutation({
   args: {
@@ -8,27 +38,7 @@ export const create = mutation({
     role: v.union(v.literal("user"), v.literal("assistant")),
     content: v.string(),
   },
-  handler: async (ctx, args) => {
-    // Verify session exists
-    const session = await ctx.db.get(args.sessionId);
-    if (!session) {
-      throw new Error("Session not found");
-    }
-
-    const messageId = await ctx.db.insert("messages", {
-      sessionId: args.sessionId,
-      role: args.role,
-      content: args.content,
-      createdAt: Date.now(),
-    });
-
-    // Update session status if new
-    if (session.status === "new") {
-      await ctx.db.patch(args.sessionId, { status: "active" });
-    }
-
-    return messageId;
-  },
+  handler: messageCreateHandler,
 });
 
 // Get messages for session (ordered by time)
@@ -69,25 +79,5 @@ export const createInternal = internalMutation({
     role: v.union(v.literal("user"), v.literal("assistant")),
     content: v.string(),
   },
-  handler: async (ctx, args) => {
-    // Verify session exists
-    const session = await ctx.db.get(args.sessionId);
-    if (!session) {
-      throw new Error("Session not found");
-    }
-
-    const messageId = await ctx.db.insert("messages", {
-      sessionId: args.sessionId,
-      role: args.role,
-      content: args.content,
-      createdAt: Date.now(),
-    });
-
-    // Update session status if new
-    if (session.status === "new") {
-      await ctx.db.patch(args.sessionId, { status: "active" });
-    }
-
-    return messageId;
-  },
+  handler: messageCreateHandler,
 });

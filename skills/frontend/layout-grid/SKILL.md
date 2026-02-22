@@ -18,14 +18,14 @@ agents: [coder, chat]
 ```tsx
 export default function Page() {
   return (
-    <div className="min-h-screen bg-[var(--color-background)]">
+    <div className="min-h-screen bg-background">
       {/* Header */}
-      <header className="border-b border-[var(--color-muted)]/20 bg-[var(--color-surface)] px-6 py-4 shadow-sm">
+      <header className="border-b border-border bg-card px-6 py-4 shadow-sm">
         <div className="container mx-auto flex items-center justify-between">
-          <h1 className="font-display text-2xl font-bold text-[var(--color-text)]">Logo</h1>
+          <h1 className="font-display text-2xl font-bold text-foreground">Logo</h1>
           <nav className="flex gap-6">
-            <a href="#" className="text-[var(--color-muted)] hover:text-[var(--color-text)]">Features</a>
-            <a href="#" className="text-[var(--color-muted)] hover:text-[var(--color-text)]">Pricing</a>
+            <a href="#" className="text-muted-foreground hover:text-foreground">Features</a>
+            <a href="#" className="text-muted-foreground hover:text-foreground">Pricing</a>
           </nav>
         </div>
       </header>
@@ -38,8 +38,8 @@ export default function Page() {
       </main>
 
       {/* Footer */}
-      <footer className="border-t border-[var(--color-muted)]/20 bg-[var(--color-surface)] px-6 py-8">
-        <div className="container mx-auto text-center text-[var(--color-muted)]">
+      <footer className="border-t border-border bg-card px-6 py-8">
+        <div className="container mx-auto text-center text-muted-foreground">
           &copy; 2024 Company
         </div>
       </footer>
@@ -60,21 +60,21 @@ export default function Page() {
 ### Features Grid Section
 
 ```tsx
-<section className="py-20 px-4 bg-[var(--color-background)]">
+<section className="py-20 px-4 bg-background">
   <div className="max-w-6xl mx-auto">
-    <h2 className="font-display text-3xl md:text-4xl font-bold text-center text-[var(--color-text)] mb-12">
+    <h2 className="font-display text-3xl md:text-4xl font-bold text-center text-foreground mb-12">
       Features
     </h2>
     <div className="grid md:grid-cols-3 gap-8">
       {features.map((feature) => (
-        <div key={feature.id} className="bg-[var(--color-surface)] p-6 rounded-xl shadow-md hover:shadow-lg transition-shadow">
-          <div className="w-12 h-12 bg-[var(--color-primary)]/10 rounded-lg flex items-center justify-center mb-4">
+        <div key={feature.id} className="bg-card p-6 rounded-xl shadow-md hover:shadow-lg transition-shadow">
+          <div className="w-12 h-12 bg-primary/10 rounded-lg flex items-center justify-center mb-4">
             {feature.icon}
           </div>
-          <h3 className="font-display text-xl font-semibold text-[var(--color-text)] mb-2">
+          <h3 className="font-display text-xl font-semibold text-foreground mb-2">
             {feature.title}
           </h3>
-          <p className="text-[var(--color-muted)]">
+          <p className="text-muted-foreground">
             {feature.description}
           </p>
         </div>
@@ -97,11 +97,11 @@ export default function Page() {
 
 **Centered Hero:**
 ```tsx
-<section className="min-h-[80vh] flex flex-col items-center justify-center text-center px-4 bg-[var(--color-background)]">
-  <h1 className="font-display text-5xl md:text-7xl font-bold text-[var(--color-text)] mb-6">
+<section className="min-h-[80vh] flex flex-col items-center justify-center text-center px-4 bg-background">
+  <h1 className="font-display text-5xl md:text-7xl font-bold text-foreground mb-6">
     {headline}
   </h1>
-  <p className="text-xl text-[var(--color-muted)] max-w-2xl mb-8">
+  <p className="text-xl text-muted-foreground max-w-2xl mb-8">
     {subheadline}
   </p>
   <div className="flex gap-4">
@@ -113,12 +113,12 @@ export default function Page() {
 
 **Split Hero (content left, image right):**
 ```tsx
-<section className="min-h-[80vh] grid md:grid-cols-2 gap-12 items-center px-4 md:px-12 bg-[var(--color-background)]">
+<section className="min-h-[80vh] grid md:grid-cols-2 gap-12 items-center px-4 md:px-12 bg-background">
   <div className="space-y-6">
-    <h1 className="font-display text-4xl md:text-6xl font-bold text-[var(--color-text)]">
+    <h1 className="font-display text-4xl md:text-6xl font-bold text-foreground">
       {headline}
     </h1>
-    <p className="text-lg text-[var(--color-muted)]">
+    <p className="text-lg text-muted-foreground">
       {subheadline}
     </p>
     <div className="flex gap-4">
@@ -126,7 +126,7 @@ export default function Page() {
       <Button variant="outline">{secondaryCTA}</Button>
     </div>
   </div>
-  <div className="bg-[var(--color-surface)] rounded-2xl aspect-video flex items-center justify-center">
+  <div className="bg-card rounded-2xl aspect-video flex items-center justify-center">
     {/* Image or visual content */}
   </div>
 </section>
@@ -164,14 +164,14 @@ export default function Page() {
 ### Visual Rhythm (Alternating Backgrounds)
 
 ```tsx
-<div className="min-h-screen bg-[var(--color-background)]">
-  <section className="py-20 bg-[var(--color-background)]">
+<div className="min-h-screen bg-background">
+  <section className="py-20 bg-background">
     {/* Section 1 */}
   </section>
-  <section className="py-20 bg-[var(--color-surface)]">
+  <section className="py-20 bg-card">
     {/* Section 2 - alternate background */}
   </section>
-  <section className="py-20 bg-[var(--color-background)]">
+  <section className="py-20 bg-background">
     {/* Section 3 */}
   </section>
 </div>
@@ -180,13 +180,13 @@ export default function Page() {
 ### Dashboard Layout
 
 ```tsx
-<div className="min-h-screen bg-[var(--color-background)]">
+<div className="min-h-screen bg-background">
   <div className="flex">
     {/* Sidebar */}
-    <aside className="w-64 border-r border-[var(--color-muted)]/20 bg-[var(--color-surface)] min-h-screen p-4">
+    <aside className="w-64 border-r border-border bg-card min-h-screen p-4">
       <nav className="space-y-2">
         {navItems.map(item => (
-          <a key={item.id} href={item.href} className="block px-4 py-2 rounded-lg hover:bg-[var(--color-primary)]/10">
+          <a key={item.id} href={item.href} className="block px-4 py-2 rounded-lg hover:bg-primary/10">
             {item.label}
           </a>
         ))}
@@ -207,7 +207,7 @@ export default function Page() {
 
 1. Use CSS Grid for 2D layouts (rows AND columns)
 2. Use Flexbox for 1D layouts (row OR column)
-3. Always use CSS variables for colors
+3. Always use Tailwind theme classes for colors (bg-primary, text-foreground, bg-card, etc.)
 4. Use container with mx-auto for centered content
 5. Apply consistent section spacing (py-16, py-20, or py-24)
 6. Alternate backgrounds for visual rhythm

@@ -11,14 +11,59 @@ const SUPABASE_API_BASE_URL = "https://api.supabase.com/v1";
  * Returns: { success: true, result: ... } or { error: "..." }
  */
 export async function POST(request: NextRequest) {
-  const body = await request.json();
-  const { access_token, project_ref, sql } = body;
-
-  if (!access_token || !project_ref || !sql) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
     return NextResponse.json(
-      { error: "Missing required fields: access_token, project_ref, sql" },
+      { error: "Invalid JSON in request body" },
       { status: 400 }
     );
+  }
+
+  const { access_token, project_ref, sql } = body;
+
+  if (
+    typeof access_token !== "string" ||
+    typeof project_ref !== "string" ||
+    typeof sql !== "string"
+  ) {
+    return NextResponse.json(
+      { error: "Missing or invalid fields: access_token, project_ref, sql must be strings" },
+      { status: 400 }
+    );
+  }
+
+  // Validate project_ref format (alphanumeric + hyphens only, max 50 chars)
+  if (!/^[a-z0-9-]{1,50}$/i.test(project_ref)) {
+    return NextResponse.json(
+      { error: "Invalid project_ref format" },
+      { status: 400 }
+    );
+  }
+
+  // Enforce SQL size limit (100KB)
+  if (sql.length > 100_000) {
+    return NextResponse.json(
+      { error: "SQL exceeds maximum length (100KB)" },
+      { status: 400 }
+    );
+  }
+
+  // SQL statement allowlist — only permit schema-building operations
+  const allowedPrefixes = [
+    "CREATE ", "ALTER ", "ENABLE ", "DROP ", "INSERT ", "SELECT ", "GRANT ",
+    "SET ", "BEGIN", "COMMIT", "DO $$", "-- ",
+  ];
+  const statements = sql.split(";").map((s: string) => s.trim()).filter(Boolean);
+  for (const stmt of statements) {
+    const upper = stmt.toUpperCase().trimStart();
+    if (!allowedPrefixes.some((prefix) => upper.startsWith(prefix))) {
+      return NextResponse.json(
+        { error: "SQL statement not allowed. Only schema operations (CREATE, ALTER, DROP, etc.) are permitted." },
+        { status: 400 }
+      );
+    }
   }
 
   const response = await fetch(

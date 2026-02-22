@@ -54,7 +54,7 @@ export default async function ProductsPage() {
   return (
     <div className="grid grid-cols-3 gap-6">
       {products.map((product) => (
-        <div key={product.id} className="p-4 bg-[var(--color-surface)] rounded-lg">
+        <div key={product.id} className="p-4 bg-card rounded-lg">
           <h2>{product.name}</h2>
           <p>${product.price}</p>
         </div>
@@ -233,12 +233,12 @@ export function DashboardStats({ initialStats }: { initialStats: Stats }) {
 
   return (
     <div className="grid grid-cols-2 gap-4">
-      <div className="p-4 bg-[var(--color-surface)] rounded-lg">
-        <p className="text-[var(--color-muted)]">Users</p>
+      <div className="p-4 bg-card rounded-lg">
+        <p className="text-muted-foreground">Users</p>
         <p className="text-2xl font-bold">{stats.users}</p>
       </div>
-      <div className="p-4 bg-[var(--color-surface)] rounded-lg">
-        <p className="text-[var(--color-muted)]">Revenue</p>
+      <div className="p-4 bg-card rounded-lg">
+        <p className="text-muted-foreground">Revenue</p>
         <p className="text-2xl font-bold">${stats.revenue}</p>
       </div>
     </div>

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import { Download, X, Check, Loader2, AlertCircle } from "lucide-react";
+import { Download, Check, Loader2, AlertCircle } from "lucide-react";
 import {
   createProjectZip,
   downloadBlob,
@@ -10,6 +10,13 @@ import {
   type FileToZip,
   type SupabaseCredentials,
 } from "@/lib/utils/download";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
 
 interface DownloadModalProps {
   isOpen: boolean;
@@ -58,99 +65,124 @@ export function DownloadModal({
     onClose();
   }, [onClose]);
 
-  // Handle backdrop click
-  const handleBackdropClick = useCallback(
-    (e: React.MouseEvent) => {
-      if (e.target === e.currentTarget) {
-        handleClose();
-      }
-    },
-    [handleClose]
-  );
-
-  if (!isOpen) return null;
-
   const totalSize = calculateTotalSize(files);
   const isLargeProject = totalSize > 5 * 1024 * 1024; // 5MB
   const isEmpty = files.length === 0;
 
   return (
-    <div
-      className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center"
-      onClick={handleBackdropClick}
-    >
-      <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 max-w-md w-full mx-4 relative">
-        {/* Close button */}
-        <button
-          onClick={handleClose}
-          className="absolute top-4 right-4 p-1 hover:bg-zinc-800 rounded-lg transition-colors"
-          title="Close"
-        >
-          <X className="w-5 h-5 text-zinc-400" />
-        </button>
-
+    <Dialog open={isOpen} onOpenChange={(open) => !open && handleClose()}>
+      <DialogContent
+        className="bg-zinc-900 border-zinc-800 sm:max-w-md"
+        showCloseButton={state !== "preparing"}
+      >
         {/* Content based on state */}
         {state === "idle" && (
-          <IdleContent
-            files={files}
-            appName={appName}
-            totalSize={totalSize}
-            isLargeProject={isLargeProject}
-            isEmpty={isEmpty}
-            onDownload={handleDownload}
-          />
+          <>
+            <DialogHeader className="text-center sm:text-center">
+              <div className="w-16 h-16 rounded-full bg-violet-500/20 flex items-center justify-center mx-auto mb-4">
+                <Download className="w-8 h-8 text-violet-400" />
+              </div>
+              <DialogTitle className="text-xl">Download Project</DialogTitle>
+              <DialogDescription>
+                {isEmpty
+                  ? "No files to download"
+                  : `Export ${appName || "your project"} as a ZIP file`}
+              </DialogDescription>
+            </DialogHeader>
+            <IdleContent
+              files={files}
+              totalSize={totalSize}
+              isLargeProject={isLargeProject}
+              isEmpty={isEmpty}
+              appName={appName}
+              onDownload={handleDownload}
+            />
+          </>
         )}
 
-        {state === "preparing" && <PreparingContent fileCount={files.length} />}
+        {state === "preparing" && (
+          <>
+            <DialogHeader className="text-center sm:text-center">
+              <div className="w-16 h-16 rounded-full bg-violet-500/20 flex items-center justify-center mx-auto mb-4">
+                <Loader2 className="w-8 h-8 text-violet-400 animate-spin" />
+              </div>
+              <DialogTitle className="text-xl">Preparing Download...</DialogTitle>
+              <DialogDescription>
+                Creating ZIP file with {files.length} files
+              </DialogDescription>
+            </DialogHeader>
+            <div className="flex justify-center gap-1">
+              <span
+                className="w-2 h-2 rounded-full bg-violet-500 animate-pulse"
+                style={{ animationDelay: "0s" }}
+              />
+              <span
+                className="w-2 h-2 rounded-full bg-violet-500 animate-pulse"
+                style={{ animationDelay: "0.2s" }}
+              />
+              <span
+                className="w-2 h-2 rounded-full bg-violet-500 animate-pulse"
+                style={{ animationDelay: "0.4s" }}
+              />
+            </div>
+          </>
+        )}
 
         {state === "complete" && (
-          <CompleteContent
-            appName={appName}
-            files={files}
-            onClose={handleClose}
-          />
+          <>
+            <DialogHeader className="text-center sm:text-center">
+              <div className="w-16 h-16 rounded-full bg-green-500/20 flex items-center justify-center mx-auto mb-4">
+                <Check className="w-8 h-8 text-green-400" />
+              </div>
+              <DialogTitle className="text-xl">Download Ready!</DialogTitle>
+              <DialogDescription>
+                {appName || "project"}.zip has been downloaded
+              </DialogDescription>
+            </DialogHeader>
+            <CompleteContent
+              files={files}
+              onClose={handleClose}
+            />
+          </>
         )}
 
         {state === "error" && (
-          <ErrorContent error={error} onRetry={handleRetry} onClose={handleClose} />
+          <>
+            <DialogHeader className="text-center sm:text-center">
+              <div className="w-16 h-16 rounded-full bg-red-500/20 flex items-center justify-center mx-auto mb-4">
+                <AlertCircle className="w-8 h-8 text-red-400" />
+              </div>
+              <DialogTitle className="text-xl">Download Failed</DialogTitle>
+              <DialogDescription>
+                {error || "Something went wrong while creating the ZIP file"}
+              </DialogDescription>
+            </DialogHeader>
+            <ErrorContent onRetry={handleRetry} onClose={handleClose} />
+          </>
         )}
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
 // Idle state - show file info and download button
 function IdleContent({
   files,
-  appName,
   totalSize,
   isLargeProject,
   isEmpty,
+  appName,
   onDownload,
 }: {
   files: FileToZip[];
-  appName: string;
   totalSize: number;
   isLargeProject: boolean;
   isEmpty: boolean;
+  appName: string;
   onDownload: () => void;
 }) {
   return (
     <>
-      <div className="text-center mb-6">
-        <div className="w-16 h-16 rounded-full bg-violet-500/20 flex items-center justify-center mx-auto mb-4">
-          <Download className="w-8 h-8 text-violet-400" />
-        </div>
-        <h2 className="text-xl font-semibold text-white mb-1">
-          Download Project
-        </h2>
-        <p className="text-sm text-zinc-400">
-          {isEmpty
-            ? "No files to download"
-            : `Export ${appName || "your project"} as a ZIP file`}
-        </p>
-      </div>
-
       {!isEmpty && (
         <div className="bg-zinc-800/50 rounded-lg p-4 mb-4">
           <div className="flex justify-between text-sm mb-2">
@@ -180,6 +212,7 @@ function IdleContent({
       )}
 
       <button
+        type="button"
         onClick={onDownload}
         disabled={isEmpty}
         className={`w-full py-2.5 rounded-lg font-medium transition-colors flex items-center justify-center gap-2 ${
@@ -201,46 +234,11 @@ function IdleContent({
   );
 }
 
-// Preparing state - show spinner
-function PreparingContent({ fileCount }: { fileCount: number }) {
-  return (
-    <div className="text-center py-4">
-      <div className="w-16 h-16 rounded-full bg-violet-500/20 flex items-center justify-center mx-auto mb-4">
-        <Loader2 className="w-8 h-8 text-violet-400 animate-spin" />
-      </div>
-      <h2 className="text-xl font-semibold text-white mb-1">
-        Preparing Download...
-      </h2>
-      <p className="text-sm text-zinc-400 mb-4">
-        Creating ZIP file with {fileCount} files
-      </p>
-
-      {/* Animated dots */}
-      <div className="flex justify-center gap-1">
-        <span
-          className="w-2 h-2 rounded-full bg-violet-500 animate-pulse"
-          style={{ animationDelay: "0s" }}
-        />
-        <span
-          className="w-2 h-2 rounded-full bg-violet-500 animate-pulse"
-          style={{ animationDelay: "0.2s" }}
-        />
-        <span
-          className="w-2 h-2 rounded-full bg-violet-500 animate-pulse"
-          style={{ animationDelay: "0.4s" }}
-        />
-      </div>
-    </div>
-  );
-}
-
 // Complete state - show success
 function CompleteContent({
-  appName,
   files,
   onClose,
 }: {
-  appName: string;
   files: FileToZip[];
   onClose: () => void;
 }) {
@@ -249,15 +247,7 @@ function CompleteContent({
   const remainingCount = files.length - previewFiles.length;
 
   return (
-    <div className="text-center">
-      <div className="w-16 h-16 rounded-full bg-green-500/20 flex items-center justify-center mx-auto mb-4">
-        <Check className="w-8 h-8 text-green-400" />
-      </div>
-      <h2 className="text-xl font-semibold text-white mb-1">Download Ready!</h2>
-      <p className="text-sm text-zinc-400 mb-4">
-        {appName || "project"}.zip has been downloaded
-      </p>
-
+    <>
       <div className="bg-zinc-800/50 rounded-lg p-3 mb-4 text-left">
         <p className="text-xs text-zinc-500 mb-2">What&apos;s included:</p>
         <ul className="text-sm text-zinc-300 space-y-1">
@@ -276,49 +266,40 @@ function CompleteContent({
       </div>
 
       <button
+        type="button"
         onClick={onClose}
         className="w-full py-2.5 rounded-lg font-medium bg-zinc-700 hover:bg-zinc-600 text-white transition-colors"
       >
         Done
       </button>
-    </div>
+    </>
   );
 }
 
 // Error state - show error and retry
 function ErrorContent({
-  error,
   onRetry,
   onClose,
 }: {
-  error: string | null;
   onRetry: () => void;
   onClose: () => void;
 }) {
   return (
-    <div className="text-center">
-      <div className="w-16 h-16 rounded-full bg-red-500/20 flex items-center justify-center mx-auto mb-4">
-        <AlertCircle className="w-8 h-8 text-red-400" />
-      </div>
-      <h2 className="text-xl font-semibold text-white mb-1">Download Failed</h2>
-      <p className="text-sm text-zinc-400 mb-4">
-        {error || "Something went wrong while creating the ZIP file"}
-      </p>
-
-      <div className="flex gap-3">
-        <button
-          onClick={onClose}
-          className="flex-1 py-2.5 rounded-lg font-medium bg-zinc-700 hover:bg-zinc-600 text-white transition-colors"
-        >
-          Cancel
-        </button>
-        <button
-          onClick={onRetry}
-          className="flex-1 py-2.5 rounded-lg font-medium bg-violet-600 hover:bg-violet-500 text-white transition-colors"
-        >
-          Try Again
-        </button>
-      </div>
+    <div className="flex gap-3">
+      <button
+        type="button"
+        onClick={onClose}
+        className="flex-1 py-2.5 rounded-lg font-medium bg-zinc-700 hover:bg-zinc-600 text-white transition-colors"
+      >
+        Cancel
+      </button>
+      <button
+        type="button"
+        onClick={onRetry}
+        className="flex-1 py-2.5 rounded-lg font-medium bg-violet-600 hover:bg-violet-500 text-white transition-colors"
+      >
+        Try Again
+      </button>
     </div>
   );
 }

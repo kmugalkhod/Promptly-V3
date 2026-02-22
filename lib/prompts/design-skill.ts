@@ -43,9 +43,9 @@ export const FONT_PAIRINGS = {
   },
   geometric: {
     display: "Outfit",
-    body: "Inter",
+    body: "Space Grotesk",
     description: "Clean, modern, tech-forward",
-    weights: { display: "400;600;700", body: "400;500" },
+    weights: { display: "400;600;700", body: "400;500;700" },
   },
   humanist: {
     display: "Fraunces",
@@ -461,18 +461,18 @@ export const TEXTURE_PATTERNS = {
   },
   "gradient-mesh": {
     css: `background:
-      radial-gradient(at 40% 20%, var(--color-primary) 0px, transparent 50%),
-      radial-gradient(at 80% 0%, var(--color-accent) 0px, transparent 50%),
-      radial-gradient(at 0% 50%, var(--color-primary) 0px, transparent 50%);`,
+      radial-gradient(at 40% 20%, var(--primary) 0px, transparent 50%),
+      radial-gradient(at 80% 0%, var(--accent) 0px, transparent 50%),
+      radial-gradient(at 0% 50%, var(--primary) 0px, transparent 50%);`,
     description: "Soft blurred color blobs",
     opacity: "opacity-30",
   },
   geometric: {
     css: `background-image:
-      linear-gradient(30deg, var(--color-muted) 12%, transparent 12.5%, transparent 87%, var(--color-muted) 87.5%, var(--color-muted)),
-      linear-gradient(150deg, var(--color-muted) 12%, transparent 12.5%, transparent 87%, var(--color-muted) 87.5%, var(--color-muted)),
-      linear-gradient(30deg, var(--color-muted) 12%, transparent 12.5%, transparent 87%, var(--color-muted) 87.5%, var(--color-muted)),
-      linear-gradient(150deg, var(--color-muted) 12%, transparent 12.5%, transparent 87%, var(--color-muted) 87.5%, var(--color-muted));
+      linear-gradient(30deg, var(--muted) 12%, transparent 12.5%, transparent 87%, var(--muted) 87.5%, var(--muted)),
+      linear-gradient(150deg, var(--muted) 12%, transparent 12.5%, transparent 87%, var(--muted) 87.5%, var(--muted)),
+      linear-gradient(30deg, var(--muted) 12%, transparent 12.5%, transparent 87%, var(--muted) 87.5%, var(--muted)),
+      linear-gradient(150deg, var(--muted) 12%, transparent 12.5%, transparent 87%, var(--muted) 87.5%, var(--muted));
     background-size: 80px 140px;
     background-position: 0 0, 0 0, 40px 70px, 40px 70px;`,
     description: "Repeating geometric pattern",
@@ -488,36 +488,36 @@ export const COMPONENT_TEMPLATES = {
   "hero-centered": {
     description: "Centered hero with headline, subheadline, and CTA buttons",
     structure: `
-<section className="min-h-[80vh] flex flex-col items-center justify-center text-center px-4 bg-[var(--color-background)]">
-  <h1 className="font-display text-5xl md:text-7xl font-bold text-[var(--color-text)] mb-6">
+<section className="min-h-[80vh] flex flex-col items-center justify-center text-center px-4 bg-background">
+  <h1 className="font-display text-5xl md:text-7xl font-bold text-foreground mb-6">
     {headline}
   </h1>
-  <p className="text-xl text-[var(--color-muted)] max-w-2xl mb-8">
+  <p className="text-xl text-muted-foreground max-w-2xl mb-8">
     {subheadline}
   </p>
   <div className="flex gap-4">
-    <Button className="bg-[var(--color-primary)] text-white">{primaryCTA}</Button>
-    <Button variant="outline" className="border-[var(--color-primary)] text-[var(--color-primary)]">{secondaryCTA}</Button>
+    <Button className="bg-primary text-primary-foreground">{primaryCTA}</Button>
+    <Button variant="outline" className="border-primary text-primary">{secondaryCTA}</Button>
   </div>
 </section>`,
   },
   "hero-split": {
     description: "Split hero with content left, image/visual right",
     structure: `
-<section className="min-h-[80vh] grid md:grid-cols-2 gap-12 items-center px-4 md:px-12 bg-[var(--color-background)]">
+<section className="min-h-[80vh] grid md:grid-cols-2 gap-12 items-center px-4 md:px-12 bg-background">
   <div className="space-y-6">
-    <h1 className="font-display text-4xl md:text-6xl font-bold text-[var(--color-text)]">
+    <h1 className="font-display text-4xl md:text-6xl font-bold text-foreground">
       {headline}
     </h1>
-    <p className="text-lg text-[var(--color-muted)]">
+    <p className="text-lg text-muted-foreground">
       {subheadline}
     </p>
     <div className="flex gap-4">
-      <Button className="bg-[var(--color-primary)] text-white">{primaryCTA}</Button>
+      <Button className="bg-primary text-primary-foreground">{primaryCTA}</Button>
       <Button variant="outline">{secondaryCTA}</Button>
     </div>
   </div>
-  <div className="bg-[var(--color-surface)] rounded-2xl aspect-video flex items-center justify-center">
+  <div className="bg-card rounded-2xl aspect-video flex items-center justify-center">
     {/* Image or visual content */}
   </div>
 </section>`,
@@ -525,21 +525,21 @@ export const COMPONENT_TEMPLATES = {
   "features-grid": {
     description: "3-column grid of feature cards with icons",
     structure: `
-<section className="py-20 px-4 bg-[var(--color-background)]">
+<section className="py-20 px-4 bg-background">
   <div className="max-w-6xl mx-auto">
-    <h2 className="font-display text-3xl md:text-4xl font-bold text-center text-[var(--color-text)] mb-12">
+    <h2 className="font-display text-3xl md:text-4xl font-bold text-center text-foreground mb-12">
       {sectionTitle}
     </h2>
     <div className="grid md:grid-cols-3 gap-8">
       {features.map((feature) => (
-        <div key={feature.id} className="bg-[var(--color-surface)] p-6 rounded-xl shadow-md hover:shadow-lg transition-all">
-          <div className="w-12 h-12 bg-[var(--color-primary)]/10 rounded-lg flex items-center justify-center mb-4">
+        <div key={feature.id} className="bg-card p-6 rounded-xl shadow-md hover:shadow-lg transition-all">
+          <div className="w-12 h-12 bg-primary/10 rounded-lg flex items-center justify-center mb-4">
             {feature.icon}
           </div>
-          <h3 className="font-display text-xl font-semibold text-[var(--color-text)] mb-2">
+          <h3 className="font-display text-xl font-semibold text-foreground mb-2">
             {feature.title}
           </h3>
-          <p className="text-[var(--color-muted)]">
+          <p className="text-muted-foreground">
             {feature.description}
           </p>
         </div>
@@ -551,23 +551,23 @@ export const COMPONENT_TEMPLATES = {
   "features-alternating": {
     description: "Alternating left-right feature sections with images",
     structure: `
-<section className="py-20 px-4 bg-[var(--color-background)]">
+<section className="py-20 px-4 bg-background">
   <div className="max-w-6xl mx-auto space-y-20">
     {features.map((feature, index) => (
       <div
         key={feature.id}
-        className={\`grid md:grid-cols-2 gap-12 items-center \${index % 2 === 1 ? 'md:flex-row-reverse' : ''}\`}
+        className="grid md:grid-cols-2 gap-12 items-center"
       >
         <div className={index % 2 === 1 ? 'md:order-2' : ''}>
-          <h3 className="font-display text-2xl md:text-3xl font-bold text-[var(--color-text)] mb-4">
+          <h3 className="font-display text-2xl md:text-3xl font-bold text-foreground mb-4">
             {feature.title}
           </h3>
-          <p className="text-lg text-[var(--color-muted)] mb-6">
+          <p className="text-lg text-muted-foreground mb-6">
             {feature.description}
           </p>
           <Button variant="outline">{feature.cta}</Button>
         </div>
-        <div className={\`bg-[var(--color-surface)] rounded-2xl aspect-video \${index % 2 === 1 ? 'md:order-1' : ''}\`}>
+        <div className={\`bg-card rounded-2xl aspect-video \${index % 2 === 1 ? 'md:order-1' : ''}\`}>
           {/* Image placeholder */}
         </div>
       </div>
@@ -578,42 +578,42 @@ export const COMPONENT_TEMPLATES = {
   "pricing-cards": {
     description: "3-tier pricing cards with highlighted recommended plan",
     structure: `
-<section className="py-20 px-4 bg-[var(--color-background)]">
+<section className="py-20 px-4 bg-background">
   <div className="max-w-6xl mx-auto">
-    <h2 className="font-display text-3xl md:text-4xl font-bold text-center text-[var(--color-text)] mb-4">
+    <h2 className="font-display text-3xl md:text-4xl font-bold text-center text-foreground mb-4">
       {sectionTitle}
     </h2>
-    <p className="text-center text-[var(--color-muted)] mb-12 max-w-2xl mx-auto">
+    <p className="text-center text-muted-foreground mb-12 max-w-2xl mx-auto">
       {sectionSubtitle}
     </p>
     <div className="grid md:grid-cols-3 gap-8">
       {plans.map((plan) => (
         <div
           key={plan.id}
-          className={\`bg-[var(--color-surface)] p-8 rounded-2xl \${plan.recommended ? 'ring-2 ring-[var(--color-primary)] scale-105' : ''}\`}
+          className={\`bg-card p-8 rounded-2xl \${plan.recommended ? 'ring-2 ring-primary scale-105' : ''}\`}
         >
           {plan.recommended && (
-            <span className="bg-[var(--color-primary)] text-white text-sm px-3 py-1 rounded-full">
+            <span className="bg-primary text-primary-foreground text-sm px-3 py-1 rounded-full">
               Recommended
             </span>
           )}
-          <h3 className="font-display text-2xl font-bold text-[var(--color-text)] mt-4">
+          <h3 className="font-display text-2xl font-bold text-foreground mt-4">
             {plan.name}
           </h3>
           <div className="mt-4 mb-6">
-            <span className="text-4xl font-bold text-[var(--color-text)]">{plan.price}</span>
-            <span className="text-[var(--color-muted)]">/month</span>
+            <span className="text-4xl font-bold text-foreground">{plan.price}</span>
+            <span className="text-muted-foreground">/month</span>
           </div>
           <ul className="space-y-3 mb-8">
             {plan.features.map((feature, i) => (
-              <li key={i} className="flex items-center gap-2 text-[var(--color-muted)]">
-                <Check className="w-5 h-5 text-[var(--color-primary)]" />
+              <li key={i} className="flex items-center gap-2 text-muted-foreground">
+                <Check className="w-5 h-5 text-primary" />
                 {feature}
               </li>
             ))}
           </ul>
           <Button
-            className={\`w-full \${plan.recommended ? 'bg-[var(--color-primary)] text-white' : 'variant-outline'}\`}
+            className={\`w-full \${plan.recommended ? 'bg-primary text-primary-foreground' : 'border border-primary text-primary'}\`}
           >
             Get Started
           </Button>
@@ -626,26 +626,26 @@ export const COMPONENT_TEMPLATES = {
   "testimonials-carousel": {
     description: "Customer testimonials in card format",
     structure: `
-<section className="py-20 px-4 bg-[var(--color-surface)]">
+<section className="py-20 px-4 bg-card">
   <div className="max-w-6xl mx-auto">
-    <h2 className="font-display text-3xl md:text-4xl font-bold text-center text-[var(--color-text)] mb-12">
+    <h2 className="font-display text-3xl md:text-4xl font-bold text-center text-foreground mb-12">
       {sectionTitle}
     </h2>
     <div className="grid md:grid-cols-3 gap-8">
       {testimonials.map((testimonial) => (
-        <div key={testimonial.id} className="bg-[var(--color-background)] p-6 rounded-xl shadow-md">
-          <p className="text-[var(--color-text)] mb-6 italic">
+        <div key={testimonial.id} className="bg-background p-6 rounded-xl shadow-md">
+          <p className="text-foreground mb-6 italic">
             "{testimonial.quote}"
           </p>
           <div className="flex items-center gap-4">
-            <div className="w-12 h-12 bg-[var(--color-primary)]/20 rounded-full flex items-center justify-center">
-              <span className="text-[var(--color-primary)] font-bold">
+            <div className="w-12 h-12 bg-primary/20 rounded-full flex items-center justify-center">
+              <span className="text-primary font-bold">
                 {testimonial.name.charAt(0)}
               </span>
             </div>
             <div>
-              <p className="font-semibold text-[var(--color-text)]">{testimonial.name}</p>
-              <p className="text-sm text-[var(--color-muted)]">{testimonial.role}</p>
+              <p className="font-semibold text-foreground">{testimonial.name}</p>
+              <p className="text-sm text-muted-foreground">{testimonial.role}</p>
             </div>
           </div>
         </div>
@@ -712,7 +712,7 @@ export const SHADOW_SYSTEMS = {
     description: "No shadows, relies on borders/color for depth",
     base: "shadow-none",
     hover: "hover:shadow-none",
-    card: "shadow-none border border-[var(--color-muted)]/20",
+    card: "shadow-none border border-border",
     example: "Brutalist, brutally-minimal aesthetics",
   },
   subtle: {
@@ -808,21 +808,22 @@ const bodyFont = Body_Font({
 :root {
   --font-display: 'Font Name', serif;
   --font-body: 'Font Name', sans-serif;
-  --color-primary: /* from DESIGN_DIRECTION */;
-  --color-accent: /* from DESIGN_DIRECTION */;
-  --color-background: /* from DESIGN_DIRECTION */;
-  --color-surface: /* from DESIGN_DIRECTION */;
-  --color-text: /* from DESIGN_DIRECTION */;
-  --color-muted: /* from DESIGN_DIRECTION */;
+  --primary: /* from DESIGN_DIRECTION */;
+  --accent: /* from DESIGN_DIRECTION */;
+  --background: /* from DESIGN_DIRECTION */;
+  --card: /* from DESIGN_DIRECTION */;
+  --foreground: /* from DESIGN_DIRECTION */;
+  --muted-foreground: /* from DESIGN_DIRECTION */;
 }
+/* Then add @theme inline block to map to Tailwind color tokens */
 
 .font-display { font-family: var(--font-display); }
 .font-body { font-family: var(--font-body); }
 \`\`\`
 
 ### Typography Rules
-- Headings: \`className="font-display text-[--color-text]"\`
-- Body text: \`className="font-body text-[--color-muted]"\`
+- Headings: \`className="font-display text-foreground"\`
+- Body text: \`className="font-body text-muted-foreground"\`
 - Use responsive sizes: text-3xl md:text-5xl lg:text-6xl
 - Create hierarchy with weight AND size, not just size
 
@@ -878,6 +879,31 @@ ${Object.entries(MOTION_PATTERNS)
 
 ## Spatial Composition
 ${Object.entries(SPATIAL_PATTERNS)
+  .map(([key, val]) => `- ${key}: ${val.description}`)
+  .join("\n")}
+
+## Texture Patterns
+${Object.entries(TEXTURE_PATTERNS)
+  .map(([key, val]) => `- ${key}: ${val.description}`)
+  .join("\n")}
+
+## Spacing Scales
+${Object.entries(SPACING_SCALES)
+  .map(([key, val]) => `- ${key}: ${val.description} (${val.example})`)
+  .join("\n")}
+
+## Shadow Systems
+${Object.entries(SHADOW_SYSTEMS)
+  .map(([key, val]) => `- ${key}: ${val.description} (${val.example})`)
+  .join("\n")}
+
+## Border Radius
+${Object.entries(RADIUS_SYSTEMS)
+  .map(([key, val]) => `- ${key}: ${val.description} (${val.example})`)
+  .join("\n")}
+
+## Component Templates
+${Object.entries(COMPONENT_TEMPLATES)
   .map(([key, val]) => `- ${key}: ${val.description}`)
   .join("\n")}
 

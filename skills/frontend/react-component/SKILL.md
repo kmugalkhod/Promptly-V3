@@ -31,15 +31,15 @@ interface FeatureCardProps {
 
 export function FeatureCard({ title, description, icon, onAction }: FeatureCardProps) {
   return (
-    <Card className="bg-[var(--color-surface)]">
+    <Card className="bg-card">
       <CardHeader>
         {icon && <div className="mb-2">{icon}</div>}
-        <CardTitle className="font-display text-[var(--color-text)]">{title}</CardTitle>
+        <CardTitle className="font-display text-foreground">{title}</CardTitle>
       </CardHeader>
       <CardContent>
-        <p className="text-[var(--color-muted)]">{description}</p>
+        <p className="text-muted-foreground">{description}</p>
         {onAction && (
-          <button onClick={onAction} className="mt-4 text-[var(--color-primary)]">
+          <button onClick={onAction} className="mt-4 text-primary">
             Learn More
           </button>
         )}
@@ -113,12 +113,15 @@ function List({ items = [], onSelect, className }: ListProps) {
 
 ### File Creation Order (MANDATORY)
 
-1. **app/globals.css** — CSS variables from DESIGN_DIRECTION
-2. **app/layout.tsx** — fonts from typography.pairing
-3. **types/index.ts** — shared TypeScript interfaces
-4. **lib/** — helper functions
-5. **components/** — reusable components
-6. **app/page.tsx** — main page and routes
+1. **schema.sql** — Database schema (if architecture.md has DATABASE section)
+2. **app/globals.css** — CSS variables from DESIGN_DIRECTION
+3. **app/layout.tsx** — fonts from typography.pairing
+4. **types/index.ts** — shared TypeScript interfaces
+5. **lib/** — helper functions (supabase client, etc.)
+6. **components/** — reusable app-specific custom components
+7. **app/page.tsx and ALL routes** — every route from architecture.md ROUTES
+
+> **PRE-INSTALLED (DO NOT CREATE):** lib/utils.ts and components/ui/*.tsx are pre-installed by shadcn. Just import them.
 
 ### Named Exports Pattern
 
@@ -149,16 +152,16 @@ interface HeroSectionProps {
 
 export function HeroSection({ headline, subheadline, ctaText, ctaHref }: HeroSectionProps) {
   return (
-    <section className="min-h-[80vh] flex flex-col items-center justify-center text-center px-4 bg-[var(--color-background)]">
-      <h1 className="font-display text-5xl md:text-7xl font-bold text-[var(--color-text)] mb-6">
+    <section className="min-h-[80vh] flex flex-col items-center justify-center text-center px-4 bg-background">
+      <h1 className="font-display text-5xl md:text-7xl font-bold text-foreground mb-6">
         {headline}
       </h1>
-      <p className="text-xl text-[var(--color-muted)] max-w-2xl mb-8">
+      <p className="text-xl text-muted-foreground max-w-2xl mb-8">
         {subheadline}
       </p>
       <a
         href={ctaHref}
-        className="px-8 py-4 bg-[var(--color-primary)] text-white rounded-xl font-semibold shadow-lg hover:shadow-xl hover:scale-105 transition-all duration-200"
+        className="px-8 py-4 bg-primary text-white rounded-xl font-semibold shadow-lg hover:shadow-xl hover:scale-105 transition-all duration-200"
       >
         {ctaText}
       </a>
@@ -193,7 +196,7 @@ const FEATURES_DATA = {
 
 export default function Home() {
   return (
-    <div className="min-h-screen bg-[var(--color-background)]">
+    <div className="min-h-screen bg-background">
       <HeroSection {...HERO_DATA} />
       <FeaturesGrid {...FEATURES_DATA} />
     </div>
@@ -207,6 +210,8 @@ export default function Home() {
 - [ ] TypeScript interfaces defined for all props
 - [ ] Safe defaults for optional array props (`items = []`)
 - [ ] All arrays have unique `key` props when mapping
-- [ ] CSS variables used for colors (no hardcoded hex)
+- [ ] Tailwind theme classes used for colors (bg-primary, text-foreground, etc. — no hardcoded hex)
 - [ ] font-display for headings, font-body for text
 - [ ] Mock data initialized (NEVER empty arrays in useState)
+- [ ] Every route in architecture.md ROUTES section has a corresponding app/**/page.tsx
+- [ ] components/ui/ files are pre-installed — do NOT create them, just import

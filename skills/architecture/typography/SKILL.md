@@ -23,7 +23,7 @@ Choose a pairing that matches your aesthetic:
 | playful | Fredoka | Nunito | Kids apps, casual |
 | luxury | Cormorant Garamond | Montserrat | Finance, premium |
 | retro | Righteous | Poppins | Games, tech demos |
-| geometric | Outfit | Inter | Construction, industrial |
+| geometric | Outfit | Space Grotesk | Construction, industrial |
 | humanist | Fraunces | Source Sans 3 | Health, wellness |
 | minimal | DM Sans | DM Sans | Productivity, dev tools |
 | bold | Bebas Neue | Open Sans | Entertainment, social |

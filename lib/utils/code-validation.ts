@@ -71,15 +71,20 @@ export async function validateGeneratedCode(
           (line.includes("Math.random()") || line.includes("Date.now()")) &&
           !isInsideCallback(lines, i)
         ) {
-          warnings.push(
-            `${filePath}:${i + 1}: Math.random()/Date.now() in component body — causes hydration mismatch`
+          errors.push(
+            `${filePath}:${i + 1}: Math.random()/Date.now() in component body — causes hydration mismatch. FIX: Move to useState + useEffect: const [val, setVal] = useState(0); useEffect(() => setVal(Math.random()), [])`
           );
           break;
         }
       }
     }
 
-    // Check: React hooks without 'use client' directive
+    // Hook detection: flags files using React hooks without 'use client'.
+    // Scope: only checks for core React hooks (useState, useEffect, useRef, useCallback, useMemo).
+    // Known behavior: custom hook FILES (e.g., hooks/useAuth.ts) that use core hooks
+    // CORRECTLY need 'use client' — this is not a false positive.
+    // Potential false positives: hook names in comments or string literals.
+    // This is accepted as low-risk since generated code rarely has hook names in comments.
     if (
       /\b(useState|useEffect|useRef|useCallback|useMemo)\b/.test(content) &&
       !content.trimStart().startsWith("'use client'") &&
@@ -101,18 +106,34 @@ export async function validateGeneratedCode(
     }
   }
 
-  // Check: app/page.tsx missing imports for created components
+  // Check: created components should be imported by at least one page file
   if (componentFiles.length > 0) {
-    const pageContent = await readFile("app/page.tsx");
-    if (pageContent) {
+    // Collect all app/**/*.tsx page files from filesCreated
+    const pageFiles = codeFiles.filter(
+      (f) => f.startsWith("app/") && f.endsWith(".tsx")
+    );
+    // Also include app/page.tsx if not already in the list (may exist from prior generation)
+    if (!pageFiles.includes("app/page.tsx")) {
+      pageFiles.push("app/page.tsx");
+    }
+
+    // Concatenate all page contents for a single scan
+    let allPageContent = "";
+    for (const pageFile of pageFiles) {
+      const content = await readFile(pageFile);
+      if (content) {
+        allPageContent += content + "\n";
+      }
+    }
+
+    if (allPageContent) {
       for (const compFile of componentFiles) {
-        // Extract component name from file path: components/TaskCard.tsx -> TaskCard
-        const compName = compFile
-          .replace("components/", "")
-          .replace(".tsx", "");
-        if (!pageContent.includes(compName)) {
+        // Extract component name: components/deck/DeckCard.tsx -> DeckCard
+        const fileName = compFile.substring(compFile.lastIndexOf("/") + 1);
+        const compName = fileName.replace(".tsx", "");
+        if (!allPageContent.includes(compName)) {
           warnings.push(
-            `app/page.tsx: Does not import/use component '${compName}' from ${compFile}`
+            `No page file imports/uses component '${compName}' from ${compFile}`
           );
         }
       }

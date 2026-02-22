@@ -10,8 +10,9 @@
  */
 
 // Agent runners
-export { runArchitectureAgent, createArchitectureMessages } from "./architecture";
+export { runArchitectureAgent } from "./architecture";
 export { runCoderAgent } from "./coder";
+export { runSchemaAgent } from "./schema";
 export { runChatAgent, shouldRecommendArchitecture, type ChatAgentConfig } from "./chat";
 
 // Context builder (used by Architecture and Coder agents)
@@ -29,9 +30,6 @@ export {
 export {
   ALLOWED_PACKAGES,
   validatePackageName,
-  TOOL_DEFINITIONS,
-  getToolsForAgent,
-  executeTool,
   type SandboxActions,
 } from "./tools";
 

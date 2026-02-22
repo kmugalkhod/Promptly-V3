@@ -4,8 +4,14 @@ import { useState, useCallback } from "react";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { Id } from "@/convex/_generated/dataModel";
-import { X, Settings, Database, ChevronRight } from "lucide-react";
+import { Settings, Database, ChevronRight } from "lucide-react";
 import { SupabaseIntegrationPanel } from "./SupabaseIntegrationPanel";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -28,50 +34,32 @@ export function SettingsModal({ isOpen, onClose, sessionId }: SettingsModalProps
     onClose();
   }, [onClose]);
 
-  const handleBackdropClick = useCallback(
-    (e: React.MouseEvent) => {
-      if (e.target === e.currentTarget) {
-        handleClose();
-      }
-    },
-    [handleClose]
-  );
-
   const handleTabChange = useCallback((tab: Tab) => {
     setActiveTab(tab);
     setView("list");
   }, []);
 
-  if (!isOpen) return null;
-
   const supabaseConnected = supabaseStatus?.supabaseConnected ?? false;
   const supabaseUrl = supabaseStatus?.supabaseUrl ?? null;
 
   return (
-    <div
-      className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center"
-      onClick={handleBackdropClick}
-    >
-      <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 max-w-lg w-full mx-4 relative">
-        {/* Close button */}
-        <button
-          onClick={handleClose}
-          className="absolute top-4 right-4 p-1 hover:bg-zinc-800 rounded-lg transition-colors"
-          title="Close"
-        >
-          <X className="w-5 h-5 text-zinc-400" />
-        </button>
-
+    <Dialog open={isOpen} onOpenChange={(open) => !open && handleClose()}>
+      <DialogContent className="bg-zinc-900 border-zinc-800 sm:max-w-lg">
         {/* Title */}
-        <div className="flex items-center gap-2 mb-5">
-          <Settings className="w-5 h-5 text-zinc-400" />
-          <h2 className="text-lg font-semibold text-white">Project Settings</h2>
-        </div>
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Settings className="w-5 h-5 text-zinc-400" />
+            Project Settings
+          </DialogTitle>
+        </DialogHeader>
 
         {/* Tabs */}
         {view === "list" && (
-          <div className="flex gap-1 mb-5 border-b border-zinc-800 pb-px">
+          <div className="flex gap-1 border-b border-zinc-800 pb-px" role="tablist">
             <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === "general"}
               onClick={() => handleTabChange("general")}
               className={`px-3 py-2 text-sm rounded-t transition-colors ${
                 activeTab === "general"
@@ -82,6 +70,9 @@ export function SettingsModal({ isOpen, onClose, sessionId }: SettingsModalProps
               General
             </button>
             <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === "integrations"}
               onClick={() => handleTabChange("integrations")}
               className={`px-3 py-2 text-sm rounded-t transition-colors ${
                 activeTab === "integrations"
@@ -107,6 +98,7 @@ export function SettingsModal({ isOpen, onClose, sessionId }: SettingsModalProps
           <div>
             {/* Supabase integration card */}
             <button
+              type="button"
               onClick={() => setView("supabase-detail")}
               className="w-full p-4 border border-zinc-800 rounded-xl bg-zinc-800/30 hover:bg-zinc-800/60 transition-colors text-left group"
             >
@@ -145,7 +137,7 @@ export function SettingsModal({ isOpen, onClose, sessionId }: SettingsModalProps
             onBack={() => setView("list")}
           />
         )}
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }

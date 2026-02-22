@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback } from "react";
 import { FolderTree } from "lucide-react";
 import { FileTreeNode } from "./FileTreeNode";
 import { buildFileTree } from "@/types";
@@ -33,13 +33,32 @@ export function FileExplorer({
     getInitialExpandedPaths(files)
   );
 
+  // Sync expanded paths when files change — track previous files via state
+  const [prevFiles, setPrevFiles] = useState(files);
+  if (files !== prevFiles) {
+    setPrevFiles(files);
+    if (files && files.length > 0) {
+      const tree = buildFileTree(files.map((f) => f.path));
+      const topLevelFolders = tree
+        .filter((node) => node.type === "folder")
+        .map((node) => node.path);
+      setExpandedPaths((prev) => {
+        const next = new Set(prev);
+        for (const folder of topLevelFolders) {
+          next.add(folder);
+        }
+        return next;
+      });
+    }
+  }
+
   // Build file tree from flat file list, memoized to avoid recalculation
   const fileTree = useMemo(() => {
     if (!files || files.length === 0) return [];
     return buildFileTree(files.map((f) => f.path));
   }, [files]);
 
-  const handleToggle = (path: string) => {
+  const handleToggle = useCallback((path: string) => {
     setExpandedPaths((prev) => {
       const next = new Set(prev);
       if (next.has(path)) {
@@ -49,7 +68,7 @@ export function FileExplorer({
       }
       return next;
     });
-  };
+  }, []);
 
   return (
     <div className="w-[250px] flex flex-col bg-zinc-950 border-r border-zinc-800">

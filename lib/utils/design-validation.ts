@@ -6,6 +6,7 @@
  */
 
 import type { DesignTokens } from "./design-tokens";
+import { buildShadcnGlobalsCss } from "./design-tokens";
 
 /** Result of design validation */
 export interface ValidationResult {
@@ -20,14 +21,16 @@ export interface ValidationResult {
 function validateGlobalsCss(content: string | null): boolean {
   if (!content) return false;
 
-  // Must contain at least --color-primary with a real hex value
-  const hasPrimaryColor = /--color-primary:\s*#[0-9a-fA-F]{3,8}/.test(content);
+  // Must contain --primary with a real hex value (bare name, shadcn format)
+  const hasPrimaryColor = /--primary:\s*#[0-9a-fA-F]{3,8}/.test(content);
   // Must not have placeholder patterns
-  const hasPlaceholders = /--color-primary:\s*#_{2,}/.test(content);
+  const hasPlaceholders = /--primary:\s*#_{2,}/.test(content);
   // Must have the tailwind import
-  const hasTailwindImport = content.includes('@import "tailwindcss"');
+  const hasTailwindImport = content.includes('@import "tailwindcss"') || content.includes("@import 'tailwindcss'");
+  // Must have @theme inline block (shadcn + Tailwind v4)
+  const hasThemeInline = content.includes("@theme inline");
 
-  return hasPrimaryColor && !hasPlaceholders && hasTailwindImport;
+  return hasPrimaryColor && !hasPlaceholders && hasTailwindImport && hasThemeInline;
 }
 
 /**
@@ -50,37 +53,73 @@ function validateLayoutTsx(content: string | null): boolean {
  * Generate correct globals.css from design tokens.
  */
 function generateGlobalsCss(tokens: DesignTokens): string {
-  const { colors, typography } = tokens;
-  const light = colors.light;
-  const dark = colors.dark;
-
-  return `@import "tailwindcss";
-
-:root {
-  --font-display: '${typography.displayFont}', serif;
-  --font-body: '${typography.bodyFont}', sans-serif;
-  --color-primary: ${light.primary || "#6366f1"};
-  --color-accent: ${light.accent || "#f59e0b"};
-  --color-background: ${light.background || "#ffffff"};
-  --color-surface: ${light.surface || "#f8fafc"};
-  --color-text: ${light.text || "#0f172a"};
-  --color-muted: ${light.muted || "#64748b"};
+  return buildShadcnGlobalsCss(tokens);
 }
 
-.dark {
-  --color-primary: ${dark.primary || light.primary || "#818cf8"};
-  --color-accent: ${dark.accent || light.accent || "#fbbf24"};
-  --color-background: ${dark.background || "#0f172a"};
-  --color-surface: ${dark.surface || "#1e293b"};
-  --color-text: ${dark.text || "#f8fafc"};
-  --color-muted: ${dark.muted || "#94a3b8"};
-}
+/**
+ * Surgically patch an existing layout.tsx to use custom fonts
+ * while preserving custom code (providers, wrappers, metadata, etc.).
+ * Falls back to full generation if the layout is empty or missing.
+ */
+function patchLayoutTsx(existing: string, tokens: DesignTokens): string {
+  let result = existing;
+  const { typography } = tokens;
 
-@custom-variant dark (&:where(.dark, .dark *));
+  const isSameFont = typography.displayImport === typography.bodyImport;
+  const fontImport = isSameFont
+    ? `import { ${typography.displayImport} } from 'next/font/google'`
+    : `import { ${typography.displayImport}, ${typography.bodyImport} } from 'next/font/google'`;
 
-.font-display { font-family: var(--font-display); }
-.font-body { font-family: var(--font-body); }
-`;
+  const displayWeights = JSON.stringify(typography.displayWeights);
+  const bodyWeights = JSON.stringify(typography.bodyWeights);
+
+  const fontSetup = isSameFont
+    ? `\nconst displayFont = ${typography.displayImport}({\n  subsets: ['latin'],\n  variable: '--font-display',\n  weight: ${displayWeights},\n})\nconst bodyFont = displayFont\n`
+    : `\nconst displayFont = ${typography.displayImport}({\n  subsets: ['latin'],\n  variable: '--font-display',\n  weight: ${displayWeights},\n})\nconst bodyFont = ${typography.bodyImport}({\n  subsets: ['latin'],\n  variable: '--font-body',\n  weight: ${bodyWeights},\n})\n`;
+
+  // 1. Replace Geist font imports with custom fonts
+  if (/import.*Geist/.test(result) || result.includes("geistSans")) {
+    // Remove all Geist-related import lines
+    result = result.replace(/import\s*\{[^}]*Geist[^}]*\}\s*from\s*['"]next\/font\/(google|local)['"][;\s]*/g, '');
+    // Remove Geist font variable declarations (geistSans, geistMono, etc.)
+    result = result.replace(/const\s+geist\w+\s*=\s*\w+\([^)]*\{[\s\S]*?\}\s*\)[;\s]*/g, '');
+
+    // Add the correct font import after the first import or at the top
+    const firstImportMatch = result.match(/^(import\s+.+\n)/m);
+    if (firstImportMatch) {
+      const insertPos = result.indexOf(firstImportMatch[0]) + firstImportMatch[0].length;
+      result = result.slice(0, insertPos) + fontImport + '\n' + fontSetup + result.slice(insertPos);
+    } else {
+      result = fontImport + '\n' + fontSetup + result;
+    }
+
+    // Replace Geist variable references in className
+    result = result.replace(/\$\{geistSans\.variable\}/g, '${displayFont.variable}');
+    result = result.replace(/\$\{geistMono\.variable\}/g, '${bodyFont.variable}');
+    // Handle other geist variable patterns
+    result = result.replace(/geistSans\.variable/g, 'displayFont.variable');
+    result = result.replace(/geistMono\.variable/g, 'bodyFont.variable');
+  } else if (!result.includes('next/font/google')) {
+    // No Google font import at all — add font import and setup at the top
+    const firstImportMatch = result.match(/^(import\s+.+\n)/m);
+    if (firstImportMatch) {
+      const insertPos = result.indexOf(firstImportMatch[0]);
+      result = result.slice(0, insertPos) + fontImport + '\n' + fontSetup + result.slice(insertPos);
+    } else {
+      result = fontImport + '\n' + fontSetup + result;
+    }
+  }
+
+  // 2. Add globals.css import if missing
+  if (!result.includes('./globals.css') && !result.includes("globals.css")) {
+    const lastImportIndex = result.lastIndexOf('import ');
+    if (lastImportIndex !== -1) {
+      const lineEnd = result.indexOf('\n', lastImportIndex);
+      result = result.slice(0, lineEnd + 1) + "import './globals.css'\n" + result.slice(lineEnd + 1);
+    }
+  }
+
+  return result;
 }
 
 /**
@@ -139,7 +178,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className={\`\${displayFont.variable} \${bodyFont.variable}\`} suppressHydrationWarning>
-      <body className="min-h-screen bg-[var(--color-background)] font-body antialiased" suppressHydrationWarning>
+      <body className="min-h-screen bg-background font-body antialiased" suppressHydrationWarning>
         {children}
       </body>
     </html>
@@ -191,10 +230,17 @@ export async function validateAndFixDesign(
 
   // Fix layout.tsx if invalid
   if (!result.layoutTsxValid) {
-    const correctLayout = generateLayoutTsx(tokens, appName);
+    // Use surgical patching if layout exists, full generation as fallback
+    const correctLayout = layoutTsx
+      ? patchLayoutTsx(layoutTsx, tokens)
+      : generateLayoutTsx(tokens, appName);
     await writeFile("app/layout.tsx", correctLayout);
     result.filesFixed.push("app/layout.tsx");
-    console.log("[design-validation] Fixed layout.tsx with correct fonts");
+    console.log(
+      layoutTsx
+        ? "[design-validation] Patched layout.tsx with correct fonts (preserved custom code)"
+        : "[design-validation] Generated layout.tsx with correct fonts"
+    );
   }
 
   return result;
