@@ -51,33 +51,7 @@ export function FeatureCard({ title, description, icon, onAction }: FeatureCardP
 
 ### 'use client' Rules
 
-| Component Has | Needs 'use client' |
-|---------------|-------------------|
-| useState, useEffect, useRef | YES |
-| onClick, onChange, onSubmit | YES |
-| useContext with client state | YES |
-| Only props + JSX (no hooks) | NO |
-| async data fetching (server) | NO |
-
-```tsx
-// ❌ Client Component CANNOT be async
-'use client'
-export default async function Page() { ... } // CRASHES!
-
-// ✅ Server Component CAN be async (no 'use client')
-export default async function Page() {
-  const data = await fetchData()
-  return <div>{data}</div>
-}
-
-// ✅ Client Component with data fetching
-'use client'
-export default function Page() {
-  const [data, setData] = useState(null)
-  useEffect(() => { fetchData().then(setData) }, [])
-  return <div>{data}</div>
-}
-```
+Add 'use client' if using hooks (useState/useEffect/useRef), event handlers, or browser APIs. Load the "client-server" skill for detailed decision table and patterns. CRITICAL: async + 'use client' = CRASH.
 
 ### TypeScript Interface Patterns
 

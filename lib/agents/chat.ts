@@ -24,6 +24,34 @@ const MODEL_NAME = "claude-sonnet-4-6";
 const MAX_ITERATIONS = 15;
 
 /**
+ * Classify edit complexity to determine thinking budget.
+ * Simple edits need less reasoning; complex edits need more.
+ */
+function classifyEditComplexity(
+  message: string,
+  fileCount: number
+): "simple" | "moderate" | "complex" {
+  const msgLower = message.toLowerCase();
+
+  // Complex: structural changes, new features, multi-file refactors
+  const complexPatterns =
+    /\b(add page|new page|add route|new route|refactor|restructure|rebuild|authentication|auth|database|crud|supabase|api|middleware|new feature|add feature)\b/i;
+  if (complexPatterns.test(msgLower) || fileCount > 10) {
+    return "complex";
+  }
+
+  // Simple: cosmetic/styling changes
+  const simplePatterns =
+    /\b(color|colour|font|padding|margin|spacing|text|size|border|radius|shadow|opacity|background|bg-|rounded|bold|italic|underline|center|align|gap|width|height|dark mode|light mode|theme)\b/i;
+  // Only simple if the message is short and matches simple patterns
+  if (simplePatterns.test(msgLower) && message.length < 200) {
+    return "simple";
+  }
+
+  return "moderate";
+}
+
+/**
  * Chat Agent configuration
  */
 export interface ChatAgentConfig {
@@ -127,11 +155,9 @@ Use Tailwind theme classes for colors — NEVER use explicit CSS variable syntax
 
 When you receive a modification request, load the \`understand-request\` skill FIRST to classify the task and determine which other skills to load. Then load the recommended skills for detailed guidance before making changes.
 
-{ARCHITECTURE_CONTEXT}
-
 ## Database Awareness
 
-- **schema.sql is auto-executed** after code generation AND after any chat modification. Changes to schema.sql are automatically applied to the database.
+- **schema.sql is auto-executed** after you write it. The system handles execution automatically — you do NOT need to tell the user to run it manually or visit the SQL Editor.
 - There are TWO "table not found" errors: 42P01 (PostgreSQL) and "Could not find the table in the schema cache" (PostgREST). BOTH are transient during initial setup.
 - **NEVER modify .env.local** — it's auto-provisioned with real Supabase credentials.
 - **NEVER join auth.users** via PostgREST — use the profiles table instead.
@@ -143,7 +169,12 @@ When you receive a modification request, load the \`understand-request\` skill F
 2. Read current schema.sql with read_file BEFORE making changes
 3. Modify schema.sql following the skill's additive patterns
 4. Also update TypeScript interfaces and component queries to match
-5. schema.sql will be auto-executed after your changes — no manual step needed
+5. schema.sql is auto-executed after you write it — never tell the user to run it manually
+
+**When the user asks to "execute", "run", or "apply" schema.sql** (without requesting changes):
+1. Read schema.sql with read_file
+2. Re-write it back using write_file with the same content
+3. Respond: "Running your database schema now." (the system auto-executes it)
 
 **When you see "table not found" or "schema cache" errors** (transient):
 - Do NOT modify schema.sql in response to these errors
@@ -159,26 +190,138 @@ When you receive a modification request, load the \`understand-request\` skill F
 - Next.js 16+ (App Router), TypeScript, Tailwind CSS v4, shadcn/ui
 - Load relevant skills for detailed patterns on these technologies.
 
+## Examples
+
+### Example 1: Simple Styling Change
+**User**: "Make the hero heading larger and change the CTA button to rounded-full"
+**Approach**: read_file components/HeroSection.tsx → change text-4xl to text-6xl, add rounded-full to button → write_file with complete file.
+
+### Example 2: Add a Feature
+**User**: "Add a dark mode toggle to the navbar"
+**Approach**: load_skill understand-request → load_skill hydration-safety → read_file components/Navbar.tsx → read_file app/globals.css → add ThemeToggle component using useState + useEffect for hydration safety → write both files with complete content.
+
 ## Current Project Files
 `;
 
 /**
- * Build file context for the system prompt
+ * Score a file's relevance to a user message.
+ * Higher score = more likely the user wants to modify this file.
  */
-function buildFileContext(files: Map<string, string>): string {
-  const sections: string[] = [];
+function scoreFileRelevance(
+  filePath: string,
+  fileContent: string,
+  userMessage: string,
+  architecture?: string
+): number {
+  const msgLower = userMessage.toLowerCase();
+  const pathLower = filePath.toLowerCase();
+  let score = 0;
 
-  // List all files
-  const filePaths = Array.from(files.keys());
-  sections.push("\n### Available Files:\n");
-  for (const path of filePaths) {
-    sections.push(`- ${path}`);
+  // 1. File path or component name mentioned directly in message (+5)
+  const fileName = filePath.split("/").pop()?.replace(/\.(tsx?|css|sql)$/, "") || "";
+  const fileNameLower = fileName.toLowerCase();
+  if (msgLower.includes(fileNameLower) && fileNameLower.length > 2) {
+    score += 5;
   }
 
-  // Include file contents
-  sections.push("\n\n### File Contents:\n");
-  for (const [path, content] of files.entries()) {
-    sections.push(`\n#### ${path}\n\`\`\`\n${content}\n\`\`\`\n`);
+  // 2. Path segments mentioned (e.g., "page", "layout", "header", "nav") (+3)
+  const pathSegments = filePath.split("/").map(s => s.replace(/\.\w+$/, "").toLowerCase());
+  for (const seg of pathSegments) {
+    if (seg.length > 2 && msgLower.includes(seg)) {
+      score += 3;
+      break; // Only count once
+    }
+  }
+
+  // 3. Keyword overlap between message words and file content (+1 per match, max 3)
+  const msgWords = msgLower.split(/\s+/).filter(w => w.length > 3);
+  const contentLower = fileContent.toLowerCase();
+  let keywordMatches = 0;
+  for (const word of msgWords) {
+    if (contentLower.includes(word)) {
+      keywordMatches++;
+      if (keywordMatches >= 3) break;
+    }
+  }
+  score += keywordMatches;
+
+  // 4. Key files always get a baseline score
+  if (pathLower === "app/page.tsx" || pathLower === "app/layout.tsx") score += 2;
+  if (pathLower === "app/globals.css") score += 1;
+  if (pathLower === "schema.sql") score += 1;
+
+  // 5. CSS-related messages boost globals.css
+  if (pathLower === "app/globals.css" && /color|theme|dark|light|font|style|css/i.test(userMessage)) {
+    score += 4;
+  }
+
+  // 6. Database-related messages boost schema.sql
+  if (pathLower === "schema.sql" && /database|table|column|schema|rls|policy|sql/i.test(userMessage)) {
+    score += 4;
+  }
+
+  return score;
+}
+
+/**
+ * Build smart file context for the system prompt.
+ * Includes top relevant files in full, lists rest as names only.
+ */
+function buildSmartFileContext(
+  files: Map<string, string>,
+  userMessage: string,
+  architecture?: string
+): string {
+  const MAX_FULL_FILES = 5;
+  const MAX_FULL_CHARS = 15000;
+
+  // Score all files
+  const scored = Array.from(files.entries()).map(([path, content]) => ({
+    path,
+    content,
+    score: scoreFileRelevance(path, content, userMessage, architecture),
+  }));
+
+  // Sort by score descending
+  scored.sort((a, b) => b.score - a.score);
+
+  // Low-score fallback: if no file scores >= 2, the message is too vague
+  // to determine relevance — include all files so the agent has full context
+  const topScore = scored[0]?.score ?? 0;
+  if (topScore < 2) {
+    const allFiles = scored.map(f => `\n#### ${f.path}\n\`\`\`\n${f.content}\n\`\`\``).join("\n");
+    return "\n### All Project Files:\n" + allFiles;
+  }
+
+  // Select top files for full inclusion (within char budget)
+  const fullFiles: { path: string; content: string }[] = [];
+  let totalChars = 0;
+  for (const file of scored) {
+    if (fullFiles.length >= MAX_FULL_FILES) break;
+    if (totalChars + file.content.length > MAX_FULL_CHARS && fullFiles.length > 0) break;
+    fullFiles.push({ path: file.path, content: file.content });
+    totalChars += file.content.length;
+  }
+
+  const fullPaths = new Set(fullFiles.map(f => f.path));
+  const remainingFiles = scored.filter(f => !fullPaths.has(f.path));
+
+  const sections: string[] = [];
+
+  // Full file contents for relevant files
+  if (fullFiles.length > 0) {
+    sections.push("\n### Relevant File Contents:\n");
+    for (const { path, content } of fullFiles) {
+      sections.push(`\n#### ${path}\n\`\`\`\n${content}\n\`\`\`\n`);
+    }
+  }
+
+  // List remaining files as names only
+  if (remainingFiles.length > 0) {
+    sections.push("\n### Other Project Files (use read_file to access):\n");
+    for (const file of remainingFiles) {
+      sections.push(`- ${file.path}`);
+    }
   }
 
   return sections.join("\n");
@@ -259,8 +402,8 @@ export async function runChatAgent(
 
           // Ensure schema.sql ends with NOTIFY for PostgREST cache reload
           if (!content.includes("NOTIFY pgrst")) {
-            console.warn(`[chat] WARNING: schema.sql missing NOTIFY pgrst statement`);
-            return `WARNING: schema.sql must end with "NOTIFY pgrst, 'reload schema';" to ensure PostgREST detects the changes. Add this as the last line.`;
+            console.warn(`[chat] Auto-appending NOTIFY pgrst to schema.sql`);
+            content += `\n-- Notify PostgREST to reload schema cache\nNOTIFY pgrst, 'reload schema';\n`;
           }
         }
 
@@ -393,6 +536,11 @@ export async function runChatAgent(
             output: `Installed: ${packageList.join(", ")}`,
           });
 
+          // Track package.json as changed
+          if (!filesChanged.includes("package.json")) {
+            filesChanged.push("package.json");
+          }
+
           // After successful install, sync updated package.json back to Convex
           try {
             const pkgContent = await sandboxActions.readFile("package.json");
@@ -443,8 +591,8 @@ export async function runChatAgent(
 
     const tools = [writeFileTool, readFileTool, deleteFileTool, installPackagesTool, loadSkillTool];
 
-    // Build system prompt with file context
-    const fileContext = buildFileContext(context.files);
+    // Build system prompt with smart file context (relevance-scored)
+    const fileContext = buildSmartFileContext(context.files, message, architecture);
 
     // Build architecture context section
     let architectureContext = "";
@@ -483,12 +631,19 @@ Use Tailwind theme classes for these colors (e.g., \`text-foreground\`, \`bg-pri
       }
     }
 
-    // Append skills section to system prompt if available
-    const systemPromptWithSkills = skillsSection
+    // Build full system prompt: static (cacheable) → dynamic
+    // Static prefix: SYSTEM_PROMPT + skills section (cached at 90% discount after first call)
+    const staticPrefix = skillsSection
       ? `${SYSTEM_PROMPT}\n\n${skillsSection}`
       : SYSTEM_PROMPT;
 
-    const fullSystemPrompt = systemPromptWithSkills.replace("{ARCHITECTURE_CONTEXT}", architectureContext) + fileContext;
+    // Dynamic suffix: architecture context + file context (changes per session/message)
+    const dynamicParts = [architectureContext, fileContext].filter(Boolean).join("\n\n");
+    const fullSystemPrompt = `${staticPrefix}\n\n${dynamicParts}`;
+
+    // Adaptive thinking budget based on edit complexity
+    const complexity = classifyEditComplexity(message, context.files.size);
+    const thinkingBudget = complexity === "simple" ? 2000 : complexity === "moderate" ? 5000 : 10000;
 
     // Create the model instance
     const model = new ChatAnthropic({
@@ -497,7 +652,7 @@ Use Tailwind theme classes for these colors (e.g., \`text-foreground\`, \`bg-pri
       streaming: true,
       thinking: {
         type: "enabled",
-        budget_tokens: 10000,
+        budget_tokens: thinkingBudget,
       },
     });
 
