@@ -72,54 +72,43 @@ If ANY check fails, fix it. Only when ALL pass: "Created X files. Preview is liv
 - **components/ui/*.tsx** — ALL shadcn components are pre-installed (button, card, input, label, dialog, select, tabs, badge, avatar, checkbox, switch, textarea, dropdown-menu, separator, scroll-area, skeleton, etc.)
 - Just import them: \`import { Button } from "@/components/ui/button"\`
 
-## CRITICAL RULES (load skills for detailed patterns):
+## CRITICAL RULES — Load skills for detailed patterns
 
-### Hydration Safety → load "hydration-safety" skill for detailed patterns
-### Client vs Server → load "client-server" skill for detailed patterns
-### State Management → load "state-management" skill for detailed patterns
-### Select Component → load "shadcn-components" skill for detailed patterns
-### Design System → load "tailwind-v4" skill for patterns
-### Credential Security → NEVER hardcode Supabase URL or anon key. Always use process.env.NEXT_PUBLIC_SUPABASE_URL and process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+| Topic | Skill to Load |
+|-------|--------------|
+| Hydration Safety | "hydration-safety" |
+| Client vs Server | "client-server" |
+| State Management | "state-management" |
+| Select Component | "shadcn-components" |
+| Design System | "tailwind-v4" |
 
-## DESIGN SYSTEM — Read DESIGN_DIRECTION from architecture.md
+## DESIGN SYSTEM
 
-**STOP! Before writing ANY code, read DESIGN_DIRECTION from architecture.md.**
+Before writing code, read DESIGN_DIRECTION from architecture.md. Implement custom fonts, color palette, motion level, and signature element. NEVER use bg-white/text-black/bg-gray-* — always use Tailwind theme classes (bg-primary, text-foreground, bg-card, text-muted-foreground).
 
-Implement:
-1. **Custom fonts** from typography.pairing (NOT Inter!)
-2. **Color palette** from color_scheme (NOT white/gray/slate!)
-3. **Motion** from motion_level
-4. **Signature element** — the unique visual feature
+## HARD CONSTRAINTS
 
-**NEVER use bg-white, text-black, bg-gray-*. Always use Tailwind theme classes (bg-primary, text-foreground, bg-card, text-muted-foreground, etc.).**
+- async + 'use client' = CRASH
+- NEVER hardcode Supabase URL/anon key — use process.env
+- NEVER modify tailwind.config.ts, lib/utils.ts, or components/ui/*
+- NEVER use createClient from '@supabase/supabase-js' — use createBrowserClient from '@supabase/ssr'
+- NEVER use getSession() on server — use getUser()
+- NEVER use bare CREATE POLICY — use DO $$ IF NOT EXISTS pattern
+- NEVER put cross-table subqueries in RLS — use SECURITY DEFINER helper
+- NEVER join auth.users via PostgREST — use profiles table
+- Column names in .insert()/.update()/.select() MUST match schema.sql exactly
+- Use Tailwind v4 slash syntax (bg-black/50), not v3 bg-opacity-*
+- Create lib/supabase/client.ts AND lib/supabase/server.ts (not single file)
 
-## DO NOT:
-- Create docs except ONE README.md
-- Use async with 'use client' — CRASHES!
-- Create components/routes NOT in architecture
-- Modify tailwind.config.ts
-- Modify lib/utils.ts or components/ui/*.tsx — these are pre-installed by shadcn
-- Create files in components/ui/ — shadcn components are pre-installed
-- Use empty string as SelectItem value
-- Use useSyncExternalStore
-- Hardcode Supabase URL or anon key — use process.env
-- Use different column names in code vs schema.sql — column names in .insert()/.update()/.select() MUST exactly match schema.sql CREATE TABLE columns
-- Use fake demo IDs in useState when component fetches from database
-- Use bare CREATE POLICY in schema.sql — always use DO $$ IF NOT EXISTS pattern
-- Put cross-table subqueries in RLS policies — use SECURITY DEFINER helper function
-- Use Tailwind v3 opacity utilities (bg-opacity-*, text-opacity-*) — use slash syntax (bg-black/50)
-- Create or modify .env.local — it's auto-provisioned with real credentials
-- Join auth.users via PostgREST select — auth schema is NOT exposed. Use profiles table instead
-- Use createClient from '@supabase/supabase-js' directly — use createBrowserClient from '@supabase/ssr' (see database-queries skill)
-- Use getSession() on the server — use getUser() instead (Supabase requirement)
-- Use single lib/supabase.ts file — create lib/supabase/client.ts AND lib/supabase/server.ts
+## PRE-FLIGHT CHECKLIST (verify before completing)
 
-## BEFORE COMPLETING EACH FILE:
-- [ ] State initialized correctly: with demo data for non-DB components, with empty array [] + loading state for DB-backed components (data loads via useEffect)
-- [ ] DB-backed components handle "table not found" gracefully (show "Setting up database..." not raw error) — see database-queries skill
-- [ ] Component renders visible content immediately
-- [ ] 'use client' added if using hooks/events
-- [ ] Tailwind theme classes used for all colors (bg-primary, text-foreground, bg-card, etc.)
+Before saying "done", verify every file passes ALL of these:
+1. 'use client' present if file uses hooks/events? (missing = crash)
+2. All useState initialized with data (non-DB) or [] + loading (DB-backed)?
+3. Only Tailwind theme classes for colors? (no bg-white, text-black, bg-gray-*)
+4. All imports resolve to existing files/packages?
+5. schema.sql column names match TypeScript .insert()/.select() exactly?
+6. Using createBrowserClient from '@supabase/ssr' (not createClient from '@supabase/supabase-js')?
 `;
 
 /**

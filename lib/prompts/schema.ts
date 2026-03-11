@@ -37,35 +37,13 @@ Generate a single file: schema.sql — a complete SQL script that creates all ta
 </workflow>
 
 <schema-sql-section-ordering>
-MANDATORY — every schema.sql MUST follow this exact section order:
-
-1. ALL CREATE TABLE IF NOT EXISTS statements
-   - Parent tables BEFORE child tables
-   - E.g., workspaces → workspace_members → projects → issues
-   - Every table MUST have: id uuid PRIMARY KEY DEFAULT gen_random_uuid(), created_at timestamptz DEFAULT now()
-
-2. SECURITY DEFINER helper functions (if 3+ tables with FK chains)
-   - Create AFTER all tables exist
-   - Used to avoid cross-table subqueries in RLS policies
-
-3. ALL ALTER TABLE ... ENABLE ROW LEVEL SECURITY statements
-
-4. ALL policy statements using DO $$ IF NOT EXISTS pattern
-   - NEVER use bare CREATE POLICY — always wrap in DO $$ block
-   - Pattern:
-     DO $$
-     BEGIN
-       IF NOT EXISTS (
-         SELECT 1 FROM pg_policies
-         WHERE tablename = 'table_name' AND policyname = 'Policy name'
-       ) THEN
-         CREATE POLICY "Policy name" ON table_name ...;
-       END IF;
-     END $$;
-
-5. ALL CREATE INDEX IF NOT EXISTS statements
-
-6. NOTIFY pgrst, 'reload schema'; — ALWAYS the last line
+MANDATORY section order in schema.sql:
+1. ALL CREATE TABLE IF NOT EXISTS (parent before child; every table: id uuid PK DEFAULT gen_random_uuid(), created_at timestamptz DEFAULT now())
+2. SECURITY DEFINER helpers (if 3+ tables with FK chains)
+3. ALL ALTER TABLE ... ENABLE ROW LEVEL SECURITY
+4. ALL policies via DO $$ IF NOT EXISTS pattern (NEVER bare CREATE POLICY)
+5. ALL CREATE INDEX IF NOT EXISTS
+6. NOTIFY pgrst, 'reload schema'; (ALWAYS last line)
 </schema-sql-section-ordering>
 
 <critical-rules>
@@ -88,30 +66,6 @@ MANDATORY — every schema.sql MUST follow this exact section order:
 - Minimize joins in policies — use IN (SELECT ...) pattern instead of joining the source table to the target table
 - If the DATABASE spec has 3+ tables with foreign key references, you MUST create a SECURITY DEFINER helper function. This is NOT optional — multi-table policies without SECURITY DEFINER WILL fail with infinite recursion
 </critical-rules>
-
-<auth-detection>
-## Auth vs Non-Auth RLS Decision
-
-Before writing any RLS policies, determine the app's authentication mode:
-
-**Non-Auth App** (no auth.users references, no user_id FK columns, no profiles table):
-- Use Pattern 5 (public CRUD) for ALL tables
-- Every policy uses USING(true) and/or WITH CHECK(true)
-- Use "TO anon, authenticated" on all policies
-- NEVER use auth.uid() — it returns NULL for anon-key connections and blocks all writes
-- Examples: todo lists, expense trackers, simple CRUD apps without login
-
-**Auth App** (has auth.users references, user_id FK columns, or profiles table):
-- Use Pattern 7 (user-owned CRUD) for tables with user_id referencing auth.users
-- Use Pattern 5 or 6 for tables without user_id (public data, shared resources)
-- Use "TO authenticated" for auth-gated policies
-- Examples: personal notes, multi-user dashboards, SaaS apps
-
-**Mixed** (some tables have user_id, some don't):
-- Apply Pattern 7 to tables WITH user_id
-- Apply Pattern 5 to tables WITHOUT user_id
-- This is common in blog apps: posts need auth, categories are public
-</auth-detection>
 
 <index-guidance>
 After creating all policies, add indexes for columns referenced in RLS policies:

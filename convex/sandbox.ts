@@ -12,7 +12,7 @@ import { action, type ActionCtx } from "./_generated/server";
 import { internal, api } from "./_generated/api";
 import { type Id } from "./_generated/dataModel";
 import { Sandbox } from "e2b";
-import { TEMPLATE, PROJECT_DIR, SANDBOX_CONFIG, TEMPLATE_CLEANUP_FILES } from "./constants";
+import { TEMPLATE, PROJECT_DIR, SANDBOX_CONFIG } from "./constants";
 
 /**
  * Sanitize a file path to prevent directory traversal attacks.
@@ -39,6 +39,111 @@ function sanitizePath(inputPath: string): string {
 }
 
 /**
+ * Replace default template files with minimal stubs instead of deleting them.
+ * Deleting app/layout.tsx crashes the Next.js dev server — stubs keep it alive.
+ */
+async function cleanupTemplateFiles(sandbox: Sandbox): Promise<void> {
+  const STUB_LAYOUT = `export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (<html lang="en"><body>{children}</body></html>);
+}`;
+  const STUB_PAGE = `export default function Page() { return null; }`;
+  const STUB_CSS = `@import "tailwindcss";`;
+
+  await sandbox.files.write(`${PROJECT_DIR}/app/layout.tsx`, STUB_LAYOUT);
+  await sandbox.files.write(`${PROJECT_DIR}/app/page.tsx`, STUB_PAGE);
+  await sandbox.files.write(`${PROJECT_DIR}/app/globals.css`, STUB_CSS);
+  // resizable.tsx can be safely deleted — not required by Next.js
+  await sandbox.commands.run(`rm -f ${PROJECT_DIR}/components/ui/resizable.tsx`);
+}
+
+/**
+ * Check if the Next.js dev server is responding to HTTP on port 3000.
+ * Uses curl which is more reliable than ss port check — catches servers that
+ * bind the port then immediately crash from compilation errors.
+ */
+async function isDevServerResponding(sandbox: Sandbox): Promise<boolean> {
+  try {
+    const result = await sandbox.commands.run(
+      `curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://localhost:3000`,
+      { timeoutMs: 10000 }
+    );
+    // curl exit code 0 = got HTTP response (any status: 200, 404, 500 all mean server is alive)
+    // curl exit code 7 = connection refused, 28 = timeout
+    return result.exitCode === 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Ensure the Next.js dev server is running on port 3000 in the sandbox.
+ * Uses HTTP-level check (curl) instead of port check (ss) to catch servers
+ * that bind the port then crash. Adds a 2s stability delay after restart.
+ */
+async function ensureDevServerRunning(
+  sandbox: Sandbox,
+  logPrefix: string
+): Promise<void> {
+  if (await isDevServerResponding(sandbox)) {
+    return; // Dev server is running and responding to HTTP
+  }
+
+  console.warn(`[${logPrefix}] Dev server not responding — restarting...`);
+
+  // Phase 1: Quick restart (handles transient crashes, ~7s)
+  try { await sandbox.commands.run(`pkill -f "next" || true`); } catch { /* safe to ignore */ }
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  try {
+    await sandbox.commands.run(
+      `cd ${PROJECT_DIR} && npm run dev > /tmp/next-dev.log 2>&1 &`,
+      { timeoutMs: 5000 }
+    );
+  } catch { /* Background process launch may throw */ }
+
+  for (let i = 0; i < 5; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    if (await isDevServerResponding(sandbox)) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      console.log(`[${logPrefix}] Dev server restarted (quick: ${i + 3}s)`);
+      return;
+    }
+  }
+
+  // Phase 2: npm install + clean cache + restart (handles missing packages, ~25s)
+  console.warn(`[${logPrefix}] Quick restart failed — running npm install...`);
+  try { await sandbox.commands.run(`pkill -f "next" || true`); } catch { /* safe to ignore */ }
+  try {
+    const installResult = await sandbox.commands.run(`npm install`, { cwd: PROJECT_DIR, timeoutMs: 30000 });
+    if (installResult.exitCode !== 0 && installResult.stderr.includes("ERESOLVE")) {
+      await sandbox.commands.run(`npm install --legacy-peer-deps`, { cwd: PROJECT_DIR, timeoutMs: 30000 });
+    }
+  } catch (e) { console.warn(`[${logPrefix}] npm install error: ${e}`); }
+  try { await sandbox.commands.run(`rm -rf ${PROJECT_DIR}/.next`); } catch { /* safe to ignore */ }
+  try {
+    await sandbox.commands.run(
+      `cd ${PROJECT_DIR} && npm run dev > /tmp/next-dev.log 2>&1 &`,
+      { timeoutMs: 5000 }
+    );
+  } catch { /* Background process launch may throw */ }
+
+  for (let i = 0; i < 15; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    if (await isDevServerResponding(sandbox)) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      console.log(`[${logPrefix}] Dev server restarted (full recovery: ${i + 3}s)`);
+      return;
+    }
+  }
+
+  // Log failure with dev server output for diagnosis
+  try {
+    const log = await sandbox.commands.run(`tail -20 /tmp/next-dev.log`);
+    console.error(`[${logPrefix}] Dev server log:\n${log.stdout}`);
+  } catch { /* safe to ignore */ }
+  console.error(`[${logPrefix}] Dev server failed to start after full recovery`);
+}
+
+/**
  * Shared helper: create a fresh sandbox, restore files, install packages, restart dev server.
  * Consolidates the 7 duplicated patterns across initializeForSession, recreate, and extendTimeout.
  */
@@ -57,10 +162,8 @@ async function createSandboxWithFiles(
   console.log(`[${logPrefix}] Waiting for dev server to start...`);
   await new Promise((resolve) => setTimeout(resolve, 3000));
 
-  // 2. Clean up default template files
-  for (const filePath of TEMPLATE_CLEANUP_FILES) {
-    await sandbox.commands.run(`rm -f ${filePath}`);
-  }
+  // 2. Clean up default template files (stubs instead of deletion)
+  await cleanupTemplateFiles(sandbox);
 
   // 3. Restore files from Convex
   let restoredFiles = 0;
@@ -101,20 +204,9 @@ async function createSandboxWithFiles(
     console.warn(`[${logPrefix}] npm install error (non-fatal): ${installError}`);
   }
 
-  // 6. Restart dev server
+  // 6. Restart dev server (polling-based verification instead of fixed sleep)
   console.log(`[${logPrefix}] Restarting dev server for clean compilation...`);
-  try {
-    await sandbox.commands.run(`pkill -f "next" || true`);
-  } catch {
-    // pkill may throw due to signal termination — safe to ignore
-  }
-  await new Promise((resolve) => setTimeout(resolve, 1000));
-  try {
-    await sandbox.commands.run(`cd ${PROJECT_DIR} && npm run dev > /tmp/next-dev.log 2>&1 &`, { timeoutMs: 5000 });
-  } catch {
-    // Background process launch may throw — safe to ignore
-  }
-  await new Promise((resolve) => setTimeout(resolve, 8000));
+  await ensureDevServerRunning(sandbox, logPrefix);
 
   const sandboxId = sandbox.sandboxId;
   const previewUrl = `https://${sandbox.getHost(3000)}`;
@@ -152,11 +244,12 @@ export const create = action({
       timeoutMs: SANDBOX_CONFIG.SHORT_TIMEOUT_SECONDS * 1000,
     });
 
-    // Clean up default template files
+    // Clean up default template files (stubs instead of deletion)
     console.log("Cleaning up default files...");
-    for (const filePath of TEMPLATE_CLEANUP_FILES) {
-      await sandbox.commands.run(`rm -f ${filePath}`);
-    }
+    await cleanupTemplateFiles(sandbox);
+
+    // Verify dev server survived cleanup
+    await ensureDevServerRunning(sandbox, "create");
 
     const sandboxId = sandbox.sandboxId;
     const previewUrl = `https://${sandbox.getHost(3000)}`;
@@ -342,6 +435,45 @@ export const checkStatus = action({
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Unknown error";
       return { alive: false, error: errorMessage };
+    }
+  },
+});
+
+/**
+ * Ensure the dev server is alive in a sandbox.
+ * Called on-demand from the frontend before opening preview in a new tab or refreshing,
+ * and automatically after iframe load to self-heal dead servers.
+ * Uses HTTP check (curl) instead of port check (ss) for reliability.
+ * Fast path (server alive): ~1s. Slow path (restart needed): up to 22s.
+ */
+export const ensureDevServer = action({
+  args: {
+    sessionId: v.id("sessions"),
+    sandboxId: v.string(),
+  },
+  handler: async (ctx, args): Promise<{ success: boolean; restarted: boolean; error?: string }> => {
+    try {
+      const session = await ctx.runQuery(api.sessions.get, { id: args.sessionId });
+      if (!session || session.sandboxId !== args.sandboxId) {
+        return { success: false, restarted: false, error: "Sandbox does not belong to session" };
+      }
+      const sandbox = await Sandbox.connect(args.sandboxId);
+
+      // HTTP-based health check (more reliable than port check)
+      if (await isDevServerResponding(sandbox)) {
+        return { success: true, restarted: false };
+      }
+
+      // Server is down — restart via existing helper (includes stability delay)
+      await ensureDevServerRunning(sandbox, "ensureDevServer");
+
+      // Verify it came back
+      return (await isDevServerResponding(sandbox))
+        ? { success: true, restarted: true }
+        : { success: false, restarted: false, error: "Dev server failed to restart" };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "Unknown error";
+      return { success: false, restarted: false, error: errorMessage };
     }
   },
 });

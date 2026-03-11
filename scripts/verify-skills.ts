@@ -49,7 +49,7 @@ async function verify() {
   const formatted = formatSkillsForPrompt(skills, "coder");
   if (
     formatted.includes("<available_skills>") &&
-    formatted.includes('name="test-skill"') &&
+    (formatted.includes('name="test-skill"') || formatted.includes("test-skill")) &&
     formatted.includes("load_skill")
   ) {
     console.log(`   ✅ Generated ${formatted.length} chars of prompt content`);

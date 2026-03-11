@@ -14,6 +14,7 @@ export { runArchitectureAgent } from "./architecture";
 export { runCoderAgent } from "./coder";
 export { runSchemaAgent } from "./schema";
 export { runChatAgent, shouldRecommendArchitecture, type ChatAgentConfig } from "./chat";
+export { runQAAgent, parseQAFindings } from "./qa";
 
 // Context builder (used by Architecture and Coder agents)
 export {
@@ -48,6 +49,11 @@ export type {
   GenerationState,
   ModificationRequest,
   AnthropicTool,
+  QAFinding,
+  QAFindingSeverity,
+  QAFindingCategory,
+  QACheckResult,
+  QAResult,
 } from "./types";
 
 // Skills system

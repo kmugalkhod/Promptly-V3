@@ -74,11 +74,16 @@ export function SupabaseIntegrationPanel({
 
   // Manual connect handler
   const handleManualConnect = useCallback(async (url: string, anonKey: string) => {
+    // Extract project ref from URL (https://{ref}.supabase.co)
+    const refMatch = url.match(/https:\/\/([a-zA-Z0-9-]+)\.supabase\.co/);
+    const projectRef = refMatch?.[1] ?? "";
+
     await updateSession({
       id: sessionId,
       supabaseUrl: url,
       supabaseAnonKey: anonKey,
       supabaseConnected: true,
+      supabaseProjectRef: projectRef,
     });
     setFlowState("idle");
     showToast("Supabase connected successfully!", "success");

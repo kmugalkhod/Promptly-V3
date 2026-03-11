@@ -18,6 +18,8 @@ interface RightPanelProps {
   isGenerating?: boolean;
   generationStage?: string;
   sandboxStatus?: "idle" | "initializing" | "ready" | "error";  // renamed to sandboxInitStatus in Preview
+  sessionId?: string;
+  sandboxId?: string;
 }
 
 type ActiveTab = "preview" | "code";
@@ -34,6 +36,8 @@ export function RightPanel({
   isGenerating,
   generationStage,
   sandboxStatus,
+  sessionId,
+  sandboxId,
 }: RightPanelProps) {
   const [activeTab, setActiveTab] = useState<ActiveTab>("preview");
 
@@ -98,6 +102,8 @@ export function RightPanel({
             isGenerating={isGenerating}
             generationStage={generationStage}
             sandboxInitStatus={sandboxStatus}
+            sessionId={sessionId}
+            sandboxId={sandboxId}
           />
         ) : (
           <div className="flex-1 flex h-full">

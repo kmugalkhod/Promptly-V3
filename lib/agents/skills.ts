@@ -105,8 +105,24 @@ export async function getSkillsMetadata(
   return skillsMetadataCache;
 }
 
+/** Core skills that get full descriptions; others shown as name-only */
+const PRIORITY_SKILLS = new Set([
+  "hydration-safety",
+  "client-server",
+  "react-component",
+  "database-queries",
+  "rls-policies",
+  "rls-policies-advanced",
+  "tailwind-v4",
+  "understand-request",
+  "modify-schema",
+  "visual-validation",
+  "auth-setup",
+]);
+
 /**
- * Format skills metadata for inclusion in system prompt
+ * Format skills metadata for inclusion in system prompt.
+ * Priority skills get full descriptions; secondary skills listed as names only.
  * @param skills Skills metadata array
  * @param agentType Which agent is requesting (filters skills)
  * @returns Formatted string for system prompt
@@ -124,18 +140,25 @@ export function formatSkillsForPrompt(
     return "";
   }
 
-  const skillsList = relevantSkills
+  const primary = relevantSkills.filter((s) => PRIORITY_SKILLS.has(s.name));
+  const secondary = relevantSkills.filter((s) => !PRIORITY_SKILLS.has(s.name));
+
+  const primaryList = primary
     .map(
       (s) =>
         `<skill name="${s.name}" category="${s.category}">\n  ${s.description}\n</skill>`
     )
     .join("\n");
 
-  return `<available_skills>
-${skillsList}
-</available_skills>
+  const secondaryList = secondary.map((s) => s.name).join(", ");
 
-Use the load_skill tool to load full instructions when you need a skill's expertise.`;
+  let result = `<available_skills>\n${primaryList}`;
+  if (secondaryList) {
+    result += `\n<other_skills>${secondaryList}</other_skills>`;
+  }
+  result += "\n</available_skills>\n\nUse the load_skill tool to load full instructions when you need a skill's expertise.";
+
+  return result;
 }
 
 /**

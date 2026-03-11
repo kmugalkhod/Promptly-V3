@@ -10,7 +10,7 @@ import { Id } from "../../convex/_generated/dataModel";
 /**
  * Agent names for the three-agent system
  */
-export type AgentName = "architecture" | "schema" | "coder" | "chat";
+export type AgentName = "architecture" | "schema" | "coder" | "chat" | "qa";
 
 /**
  * Tool context passed to agent tools for file operations
@@ -168,4 +168,62 @@ export interface AnthropicTool {
     }>;
     required: string[];
   };
+}
+
+/**
+ * Severity of a QA finding
+ */
+export type QAFindingSeverity = "critical" | "major" | "minor";
+
+/**
+ * Category of a QA finding
+ */
+export type QAFindingCategory = "accessibility" | "responsive" | "links" | "visual";
+
+/**
+ * A single QA issue found during validation
+ */
+export interface QAFinding {
+  /** Route where issue was found */
+  route: string;
+  /** Issue category */
+  category: QAFindingCategory;
+  /** Severity level */
+  severity: QAFindingSeverity;
+  /** Human-readable description */
+  description: string;
+  /** Suggested fix instruction for Coder/Chat Agent */
+  suggestedFix: string;
+  /** File likely responsible (if identifiable) */
+  file?: string;
+}
+
+/**
+ * Result of QA checks for a single route
+ */
+export interface QACheckResult {
+  /** Route path that was checked */
+  route: string;
+  /** Whether this route passed all checks */
+  passed: boolean;
+  /** Findings for this route */
+  findings: QAFinding[];
+  /** Screenshot paths captured (sandbox paths) */
+  screenshotPaths: string[];
+}
+
+/**
+ * Overall QA Agent result
+ */
+export interface QAResult {
+  /** Whether all routes passed QA */
+  passed: boolean;
+  /** Per-route check results */
+  routeResults: QACheckResult[];
+  /** All findings across all routes */
+  allFindings: QAFinding[];
+  /** Total routes checked */
+  routesChecked: number;
+  /** Total issues found */
+  issuesFound: number;
 }

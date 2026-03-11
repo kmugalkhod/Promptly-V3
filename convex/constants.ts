@@ -3,8 +3,8 @@
  * Centralizes values previously duplicated across generate.ts and sandbox.ts.
  */
 
-/** E2B template with Next.js 16 + Tailwind v4 + shadcn/ui */
-export const TEMPLATE = "nextjs16-tailwind4";
+/** E2B template with Next.js 16 + Tailwind v4 + shadcn/ui + agent-browser */
+export const TEMPLATE = "nextjs16-tailwind4-qa";
 /** Project directory in sandbox */
 export const PROJECT_DIR = "/home/user";
 
@@ -29,10 +29,4 @@ export const KEY_FILES = [
   "tsconfig.json", "postcss.config.mjs", "postcss.config.js",
 ] as const;
 
-/** Default template files to remove on sandbox creation */
-export const TEMPLATE_CLEANUP_FILES = [
-  `${PROJECT_DIR}/app/page.tsx`,
-  `${PROJECT_DIR}/app/layout.tsx`,
-  `${PROJECT_DIR}/app/globals.css`,
-  `${PROJECT_DIR}/components/ui/resizable.tsx`,
-] as const;
+

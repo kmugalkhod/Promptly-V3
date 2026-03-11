@@ -8,7 +8,11 @@ import {
   Tablet,
   Smartphone,
   Download,
+  Loader2,
 } from "lucide-react";
+import { useAction } from "convex/react";
+import { api } from "@/convex/_generated/api";
+import { Id } from "@/convex/_generated/dataModel";
 import { PreviewLoading } from "./PreviewLoading";
 import { PreviewError } from "./PreviewError";
 import { SandboxStatus } from "./SandboxStatus";
@@ -21,6 +25,8 @@ interface PreviewProps {
   isGenerating?: boolean;
   generationStage?: string;
   sandboxInitStatus?: "idle" | "initializing" | "ready" | "error";
+  sessionId?: string;
+  sandboxId?: string;
 }
 
 type ViewportSize = "desktop" | "tablet" | "mobile";
@@ -62,12 +68,16 @@ const defaultHtml = `
 </html>
 `;
 
-export function Preview({ previewUrl, code, onRetry, isGenerating, generationStage, sandboxInitStatus }: PreviewProps) {
+export function Preview({ previewUrl, code, onRetry, isGenerating, generationStage, sandboxInitStatus, sessionId, sandboxId }: PreviewProps) {
   const [viewport, setViewport] = useState<ViewportSize>("desktop");
   const [refreshCount, setRefreshCount] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
   const [hasError, setHasError] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
+  const [isCheckingServer, setIsCheckingServer] = useState(false);
+  const ensureDevServer = useAction(api.sandbox.ensureDevServer);
+  // Limit auto-health-check retries to prevent infinite refresh loops
+  const autoRetryCount = useRef(0);
 
   // Track previous sandbox status to detect when initialization completes
   const prevSandboxInitStatusRef = useRef(sandboxInitStatus);
@@ -121,7 +131,28 @@ export function Preview({ previewUrl, code, onRetry, isGenerating, generationSta
   const handleIframeLoad = useCallback(() => {
     setIsLoading(false);
     setHasError(false);
-  }, []);
+
+    // Auto-health-check: when iframe loads for a sandbox URL, verify server is alive.
+    // If the E2B error page loaded (server was dead), this detects it, restarts, and auto-refreshes.
+    // Limited to 1 auto-retry per refresh cycle to prevent infinite loops.
+    if (previewUrl && sessionId && sandboxId && autoRetryCount.current < 1) {
+      ensureDevServer({
+        sessionId: sessionId as Id<"sessions">,
+        sandboxId,
+      }).then((result) => {
+        if (result.restarted) {
+          autoRetryCount.current++;
+          // Server was dead → restarted. Auto-refresh after grace period.
+          setTimeout(() => {
+            setRefreshCount((c) => c + 1);
+            setIsLoading(true);
+          }, 1500);
+        }
+      }).catch(() => {
+        // Background check failure is non-critical — user can still manually refresh
+      });
+    }
+  }, [previewUrl, sessionId, sandboxId, ensureDevServer]);
 
   const handleIframeError = useCallback(() => {
     setIsLoading(false);
@@ -129,12 +160,46 @@ export function Preview({ previewUrl, code, onRetry, isGenerating, generationSta
     setErrorMessage("Failed to load preview. The sandbox may be unavailable.");
   }, []);
 
-  const handleRefresh = useCallback(() => {
+  const checkDevServer = useCallback(async (): Promise<boolean> => {
+    // No-op for non-sandbox previews or missing IDs
+    if (!previewUrl || !sessionId || !sandboxId) return true;
+
+    setIsCheckingServer(true);
+    try {
+      const result = await ensureDevServer({
+        sessionId: sessionId as Id<"sessions">,
+        sandboxId,
+      });
+      if (result.success) {
+        if (result.restarted) {
+          // Grace period for Next.js to finish compiling after restart
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+        }
+        return true;
+      }
+      setHasError(true);
+      setErrorMessage(result.error || "Dev server is not responding");
+      return false;
+    } catch (err) {
+      setHasError(true);
+      setErrorMessage(err instanceof Error ? err.message : "Failed to check dev server");
+      return false;
+    } finally {
+      setIsCheckingServer(false);
+    }
+  }, [previewUrl, sessionId, sandboxId, ensureDevServer]);
+
+  const handleRefresh = useCallback(async () => {
+    autoRetryCount.current = 0; // Reset auto-retry on manual refresh
+    if (isExternalUrl) {
+      const ok = await checkDevServer();
+      if (!ok) return;
+    }
     setIsLoading(isExternalUrl);
     setHasError(false);
     setErrorMessage("");
     setRefreshCount((c) => c + 1);
-  }, [isExternalUrl]);
+  }, [isExternalUrl, checkDevServer]);
 
   const handleRetry = useCallback(() => {
     handleRefresh();
@@ -152,8 +217,10 @@ export function Preview({ previewUrl, code, onRetry, isGenerating, generationSta
     URL.revokeObjectURL(url);
   };
 
-  const handleOpenInNewTab = () => {
+  const handleOpenInNewTab = useCallback(async () => {
     if (previewUrl) {
+      const ok = await checkDevServer();
+      if (!ok) return;
       window.open(previewUrl, "_blank");
     } else {
       const content = code || defaultHtml;
@@ -163,7 +230,7 @@ export function Preview({ previewUrl, code, onRetry, isGenerating, generationSta
       // Revoke after brief delay to allow new tab to load
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
-  };
+  }, [previewUrl, code, checkDevServer]);
 
   return (
     <div className="flex flex-col h-full bg-zinc-900">
@@ -216,18 +283,28 @@ export function Preview({ previewUrl, code, onRetry, isGenerating, generationSta
           <button
             type="button"
             onClick={handleRefresh}
-            className="p-1.5 hover:bg-zinc-800 rounded"
+            disabled={isCheckingServer}
+            className="p-1.5 hover:bg-zinc-800 rounded disabled:opacity-50"
             aria-label="Refresh preview"
           >
-            <RefreshCw className="w-4 h-4 text-zinc-400" />
+            {isCheckingServer ? (
+              <Loader2 className="w-4 h-4 text-zinc-400 animate-spin" />
+            ) : (
+              <RefreshCw className="w-4 h-4 text-zinc-400" />
+            )}
           </button>
           <button
             type="button"
             onClick={handleOpenInNewTab}
-            className="p-1.5 hover:bg-zinc-800 rounded"
+            disabled={isCheckingServer}
+            className="p-1.5 hover:bg-zinc-800 rounded disabled:opacity-50"
             aria-label="Open in new tab"
           >
-            <ExternalLink className="w-4 h-4 text-zinc-400" />
+            {isCheckingServer ? (
+              <Loader2 className="w-4 h-4 text-zinc-400 animate-spin" />
+            ) : (
+              <ExternalLink className="w-4 h-4 text-zinc-400" />
+            )}
           </button>
           <button
             type="button"

@@ -108,30 +108,28 @@ export async function validateGeneratedCode(
 
   // Check: created components should be imported by at least one page file
   if (componentFiles.length > 0) {
-    // Collect all app/**/*.tsx page files from filesCreated
-    const pageFiles = codeFiles.filter(
-      (f) => f.startsWith("app/") && f.endsWith(".tsx")
-    );
+    // Collect all .tsx files (app + components) to catch transitive usage
+    const allTsxFiles = codeFiles.filter((f) => f.endsWith(".tsx"));
     // Also include app/page.tsx if not already in the list (may exist from prior generation)
-    if (!pageFiles.includes("app/page.tsx")) {
-      pageFiles.push("app/page.tsx");
+    if (!allTsxFiles.includes("app/page.tsx")) {
+      allTsxFiles.push("app/page.tsx");
     }
 
-    // Concatenate all page contents for a single scan
-    let allPageContent = "";
-    for (const pageFile of pageFiles) {
-      const content = await readFile(pageFile);
+    // Concatenate all .tsx file contents for a single scan
+    let allFileContent = "";
+    for (const tsxFile of allTsxFiles) {
+      const content = await readFile(tsxFile);
       if (content) {
-        allPageContent += content + "\n";
+        allFileContent += content + "\n";
       }
     }
 
-    if (allPageContent) {
+    if (allFileContent) {
       for (const compFile of componentFiles) {
         // Extract component name: components/deck/DeckCard.tsx -> DeckCard
         const fileName = compFile.substring(compFile.lastIndexOf("/") + 1);
         const compName = fileName.replace(".tsx", "");
-        if (!allPageContent.includes(compName)) {
+        if (!allFileContent.includes(compName)) {
           warnings.push(
             `No page file imports/uses component '${compName}' from ${compFile}`
           );

@@ -205,6 +205,8 @@ export default function BuilderPage({ params }: BuilderPageProps) {
           isGenerating={isProcessing && (!files || files.length === 0)}
           generationStage={generationStage}
           sandboxStatus={sandboxStatus}
+          sessionId={sessionId}
+          sandboxId={session.sandboxId}
         />
       </div>
     </div>

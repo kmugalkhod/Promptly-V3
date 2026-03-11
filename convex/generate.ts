@@ -20,8 +20,11 @@ import {
   runCoderAgent,
   runChatAgent,
   runSchemaAgent,
+  runQAAgent,
+  parseQAFindings,
   type ToolContext,
   type SandboxActions,
+  type QAResult,
 } from "../lib/agents";
 import { deriveAppName, extractAppNameFromArchitecture } from "../lib/utils/app-name";
 import { extractDesignTokens, formatDesignTokensForCoder } from "../lib/utils/design-tokens";
@@ -29,10 +32,10 @@ import { extractDatabaseSection } from "../lib/utils/database-extraction";
 import { validateAndFixDesign } from "../lib/utils/design-validation";
 import { validateGeneratedCode } from "../lib/utils/code-validation";
 import { validateCoderOutput } from "../lib/utils/coder-validation";
-import { formatCoderRetryPrompt } from "../lib/prompts";
+import { formatCoderRetryPrompt, formatQARetryPrompt } from "../lib/prompts";
 import { extractPackagesFromArchitecture } from "../lib/utils/package-extraction";
 import { SandboxErrorType, type SandboxError } from "../lib/sandbox/types";
-import { KEY_FILES, PROJECT_DIR, TEMPLATE, SANDBOX_CONFIG, TEMPLATE_CLEANUP_FILES } from "./constants";
+import { KEY_FILES, PROJECT_DIR, TEMPLATE, SANDBOX_CONFIG } from "./constants";
 
 // ============================================================================
 // Simple Request Classification (from reference code)
@@ -672,6 +675,114 @@ interface SandboxConnectionResult {
 }
 
 /**
+ * Replace default template files with minimal stubs instead of deleting them.
+ * Deleting app/layout.tsx crashes the Next.js dev server (it's required by App Router).
+ * Stubs keep the dev server alive while the Coder Agent writes proper files.
+ */
+async function cleanupTemplateFiles(sandbox: Sandbox): Promise<void> {
+  // Minimal stubs that keep Next.js dev server happy
+  const STUB_LAYOUT = `export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (<html lang="en"><body>{children}</body></html>);
+}`;
+  const STUB_PAGE = `export default function Page() { return null; }`;
+  const STUB_CSS = `@import "tailwindcss";`;
+
+  await sandbox.files.write(`${PROJECT_DIR}/app/layout.tsx`, STUB_LAYOUT);
+  await sandbox.files.write(`${PROJECT_DIR}/app/page.tsx`, STUB_PAGE);
+  await sandbox.files.write(`${PROJECT_DIR}/app/globals.css`, STUB_CSS);
+  // resizable.tsx can be safely deleted — not required by Next.js
+  await sandbox.commands.run(`rm -f ${PROJECT_DIR}/components/ui/resizable.tsx`);
+}
+
+/**
+ * Check if the Next.js dev server is responding to HTTP on port 3000.
+ * Uses curl which is more reliable than ss port check — catches servers that
+ * bind the port then immediately crash from compilation errors.
+ * Returns true if the server responds with any HTTP status code.
+ */
+async function isDevServerResponding(sandbox: Sandbox): Promise<boolean> {
+  try {
+    const result = await sandbox.commands.run(
+      `curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://localhost:3000`,
+      { timeoutMs: 10000 }
+    );
+    // curl exit code 0 = got HTTP response (any status: 200, 404, 500 all mean server is alive)
+    // curl exit code 7 = connection refused, 28 = timeout
+    return result.exitCode === 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Ensure the Next.js dev server is running on port 3000 in the sandbox.
+ * Uses HTTP-level check (curl) instead of port check (ss) to catch servers
+ * that bind the port then crash. Adds a 2s stability delay after restart.
+ */
+async function ensureDevServerRunning(
+  sandbox: Sandbox,
+  logPrefix: string
+): Promise<void> {
+  if (await isDevServerResponding(sandbox)) {
+    return; // Dev server is running and responding to HTTP
+  }
+
+  console.warn(`[${logPrefix}] Dev server not responding — restarting...`);
+
+  // Phase 1: Quick restart (handles transient crashes, ~7s)
+  try { await sandbox.commands.run(`pkill -f "next" || true`); } catch { /* safe to ignore */ }
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  try {
+    await sandbox.commands.run(
+      `cd ${PROJECT_DIR} && npm run dev > /tmp/next-dev.log 2>&1 &`,
+      { timeoutMs: 5000 }
+    );
+  } catch { /* Background process launch may throw */ }
+
+  for (let i = 0; i < 5; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    if (await isDevServerResponding(sandbox)) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      console.log(`[${logPrefix}] Dev server restarted (quick: ${i + 3}s)`);
+      return;
+    }
+  }
+
+  // Phase 2: npm install + clean cache + restart (handles missing packages, ~25s)
+  console.warn(`[${logPrefix}] Quick restart failed — running npm install...`);
+  try { await sandbox.commands.run(`pkill -f "next" || true`); } catch { /* safe to ignore */ }
+  try {
+    const installResult = await sandbox.commands.run(`npm install`, { cwd: PROJECT_DIR, timeoutMs: 30000 });
+    if (installResult.exitCode !== 0 && installResult.stderr.includes("ERESOLVE")) {
+      await sandbox.commands.run(`npm install --legacy-peer-deps`, { cwd: PROJECT_DIR, timeoutMs: 30000 });
+    }
+  } catch (e) { console.warn(`[${logPrefix}] npm install error: ${e}`); }
+  try { await sandbox.commands.run(`rm -rf ${PROJECT_DIR}/.next`); } catch { /* safe to ignore */ }
+  try {
+    await sandbox.commands.run(
+      `cd ${PROJECT_DIR} && npm run dev > /tmp/next-dev.log 2>&1 &`,
+      { timeoutMs: 5000 }
+    );
+  } catch { /* Background process launch may throw */ }
+
+  for (let i = 0; i < 15; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    if (await isDevServerResponding(sandbox)) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      console.log(`[${logPrefix}] Dev server restarted (full recovery: ${i + 3}s)`);
+      return;
+    }
+  }
+
+  // Log failure with dev server output for diagnosis
+  try {
+    const log = await sandbox.commands.run(`tail -20 /tmp/next-dev.log`);
+    console.error(`[${logPrefix}] Dev server log:\n${log.stdout}`);
+  } catch { /* safe to ignore */ }
+  console.error(`[${logPrefix}] Dev server failed to start after full recovery`);
+}
+
+/**
  * Connect to an existing sandbox or create a new one if expired.
  * Uses retry logic for transient connection failures.
  */
@@ -718,11 +829,13 @@ async function connectOrRecreateSandbox(
     timeoutMs: SANDBOX_CONFIG.TIMEOUT_SECONDS * 1000,
   });
 
-  // Clean up default template files — coder creates these fresh with design tokens/app content
-  for (const filePath of TEMPLATE_CLEANUP_FILES) {
-    await sandbox.commands.run(`rm -f ${filePath}`);
-  }
+  // Clean up default template files — write minimal stubs instead of deleting
+  // (deleting layout.tsx crashes the Next.js dev server)
+  await cleanupTemplateFiles(sandbox);
   // NOTE: components/ui/*.tsx (other than resizable) are pre-installed by shadcn and intentionally preserved
+
+  // Ensure the dev server survived the stub writes before returning the preview URL
+  await ensureDevServerRunning(sandbox, "connectOrRecreateSandbox");
 
   const sandboxId = sandbox.sandboxId;
   const previewUrl = `https://${sandbox.getHost(3000)}`;
@@ -912,9 +1025,7 @@ async function runCoderWithValidation(
       break;
     }
 
-    lastCoderError = validation.formattedWarnings
-      ? `${validation.formattedErrors}\n\n${validation.formattedWarnings}`
-      : validation.formattedErrors;
+    lastCoderError = validation.formattedErrors;
     console.warn(
       `[${logPrefix}] Coder validation failed (attempt ${coderAttempt}/${MAX_CODER_ATTEMPTS}): ${validation.errors.length} errors`
     );
@@ -949,6 +1060,375 @@ async function runCoderWithValidation(
   }
 
   return { coderResult, cumulativeFiles, lastError: lastCoderError };
+}
+
+/**
+ * Run QA Agent with retry loop: QA → Coder fix → QA → Coder fix → deliver.
+ * Max 2 QA cycles. If QA passes or retries exhausted, returns.
+ */
+async function runQAWithRetry(
+  ctx: { runMutation: typeof import("./_generated/server").action["prototype"]["runMutation"] },
+  sessionId: import("./_generated/dataModel").Id<"sessions">,
+  architecture: string,
+  previewUrl: string,
+  toolContext: ToolContext,
+  sandboxActions: SandboxActions,
+  sandbox: Sandbox,
+  options: {
+    coderLimits: { initial: number; fix: number };
+    designTokensBlock?: string;
+    schemaGenerated?: boolean;
+  },
+  cumulativeFiles: Set<string>,
+  logPrefix: string,
+  generateStartTime: number
+): Promise<{
+  qaPassed: boolean;
+  qaResult: QAResult | null;
+}> {
+  const MAX_QA_CYCLES = 2;
+  let qaResult: QAResult | null = null;
+
+  for (let qaCycle = 1; qaCycle <= MAX_QA_CYCLES; qaCycle++) {
+    // 1. Check remaining sandbox time budget (leave 60s buffer)
+    const elapsedMs = Date.now() - generateStartTime;
+    const remainingMs = (SANDBOX_CONFIG.TIMEOUT_SECONDS * 1000) - elapsedMs;
+    if (remainingMs < 60_000) {
+      console.warn(`[${logPrefix}] Skipping QA — insufficient time remaining (${Math.round(remainingMs / 1000)}s)`);
+      await ctx.runMutation(internal.sessions.updateInternal, {
+        id: sessionId,
+        qaStatus: "skipped",
+        qaError: "Insufficient time remaining",
+      });
+      return { qaPassed: true, qaResult: null };
+    }
+
+    // 2. Update status
+    if (qaCycle === 1) {
+      console.log(`[${logPrefix}] Running QA Agent...`);
+      await ctx.runMutation(internal.sessions.updateInternal, {
+        id: sessionId,
+        qaStatus: "validating",
+        qaRetryCount: 0,
+      });
+      await ctx.runMutation(api.messages.create, {
+        sessionId,
+        role: "assistant",
+        content: "Validating your website for visual quality, accessibility, and responsive behavior...",
+      });
+    } else {
+      console.log(`[${logPrefix}] QA re-validation (cycle ${qaCycle}/${MAX_QA_CYCLES})...`);
+      await ctx.runMutation(internal.sessions.updateInternal, {
+        id: sessionId,
+        qaStatus: "validating",
+        qaRetryCount: qaCycle - 1,
+      });
+    }
+
+    // 3. Run QA Agent
+    const qaAgentResult = await runQAAgent(
+      previewUrl,
+      architecture,
+      toolContext,
+      sandboxActions
+    );
+
+    // 4. Parse findings
+    qaResult = parseQAFindings(qaAgentResult.response);
+    console.log(`[${logPrefix}] QA result: ${qaResult.issuesFound} issues found across ${qaResult.routesChecked} routes`);
+
+    // 5. Check if passed
+    if (qaResult.passed || qaResult.issuesFound === 0) {
+      console.log(`[${logPrefix}] QA validation passed`);
+      await ctx.runMutation(internal.sessions.updateInternal, {
+        id: sessionId,
+        qaStatus: "success",
+        qaRetryCount: qaCycle - 1,
+      });
+
+      if (qaCycle > 1) {
+        await ctx.runMutation(api.messages.create, {
+          sessionId,
+          role: "assistant",
+          content: `Website validated successfully after ${qaCycle - 1} fix${qaCycle - 1 === 1 ? "" : "es"}.`,
+        });
+      } else {
+        await ctx.runMutation(api.messages.create, {
+          sessionId,
+          role: "assistant",
+          content: "Website validated — no visual or accessibility issues found.",
+        });
+      }
+      return { qaPassed: true, qaResult };
+    }
+
+    // 6. QA found issues — if retries remain, fix and re-validate
+    if (qaCycle < MAX_QA_CYCLES) {
+      console.log(`[${logPrefix}] QA found ${qaResult.issuesFound} issues, routing to Coder for fixes...`);
+
+      await ctx.runMutation(internal.sessions.updateInternal, {
+        id: sessionId,
+        qaStatus: "fixing",
+        qaRetryCount: qaCycle,
+      });
+
+      await ctx.runMutation(api.messages.create, {
+        sessionId,
+        role: "assistant",
+        content: `Website validation found ${qaResult.issuesFound} issue${qaResult.issuesFound === 1 ? "" : "s"}. Auto-fixing...`,
+      });
+
+      // Format QA findings as Coder fix instructions
+      const qaErrorFeedback = formatQARetryPrompt(
+        qaResult.allFindings,
+        architecture,
+        [...cumulativeFiles]
+      );
+
+      // Run Coder Agent in fix mode
+      const fixResult = await runCoderAgent(
+        architecture,
+        previewUrl,
+        toolContext,
+        sandboxActions,
+        options.designTokensBlock,
+        options.schemaGenerated,
+        qaErrorFeedback,
+        { recursionLimit: options.coderLimits.fix, fixRecursionLimit: options.coderLimits.fix }
+      );
+
+      // Track fixed files
+      if (fixResult.filesChanged) {
+        for (const f of fixResult.filesChanged) {
+          cumulativeFiles.add(f);
+        }
+      }
+
+      // Run npm install after fixes
+      try {
+        const installResult = await sandbox.commands.run("npm install", { cwd: PROJECT_DIR });
+        if (installResult.exitCode !== 0 && installResult.stderr.includes("ERESOLVE")) {
+          await sandbox.commands.run("npm install --legacy-peer-deps", { cwd: PROJECT_DIR });
+        }
+      } catch (error) {
+        console.warn(`[${logPrefix}] Post-QA-fix install error (non-fatal): ${error}`);
+      }
+
+      // Restart dev server for clean state before next QA cycle
+      await ensureDevServerRunning(sandbox, logPrefix);
+
+      continue;
+    }
+
+    // 7. Max QA retries exhausted — deliver with best effort
+    console.warn(`[${logPrefix}] QA validation incomplete after ${MAX_QA_CYCLES} cycles — ${qaResult.issuesFound} remaining issues`);
+
+    await ctx.runMutation(internal.sessions.updateInternal, {
+      id: sessionId,
+      qaStatus: "error",
+      qaError: `${qaResult.issuesFound} issues after ${MAX_QA_CYCLES} QA cycles`,
+      qaRetryCount: MAX_QA_CYCLES,
+    });
+
+    const issueSummary = qaResult.allFindings
+      .filter((f) => f.severity !== "minor")
+      .slice(0, 3)
+      .map((f) => `- ${f.category}: ${f.description}`)
+      .join("\n");
+
+    await ctx.runMutation(api.messages.create, {
+      sessionId,
+      role: "assistant",
+      content: `Website validation completed with ${qaResult.issuesFound} remaining issue${qaResult.issuesFound === 1 ? "" : "s"}:\n${issueSummary}\n\nThe app should still work — use the chat to address remaining issues.`,
+    });
+
+    return { qaPassed: false, qaResult };
+  }
+
+  return { qaPassed: false, qaResult };
+}
+
+/**
+ * Run QA Agent with retry loop for the modify flow.
+ * Same as runQAWithRetry() but routes fixes to Chat Agent instead of Coder Agent.
+ * Max 2 QA cycles: QA → Chat fix → QA → Chat fix → deliver.
+ */
+async function runQAForModify(
+  ctx: { runMutation: typeof import("./_generated/server").action["prototype"]["runMutation"] },
+  sessionId: import("./_generated/dataModel").Id<"sessions">,
+  architecture: string,
+  previewUrl: string,
+  toolContext: ToolContext,
+  sandboxActions: SandboxActions,
+  sandbox: Sandbox,
+  allFilesChanged: string[],
+  logPrefix: string,
+  modifyStartTime: number
+): Promise<{
+  qaPassed: boolean;
+  qaResult: QAResult | null;
+  additionalFilesChanged: string[];
+}> {
+  const MAX_QA_CYCLES = 2;
+  let qaResult: QAResult | null = null;
+  const additionalFilesChanged: string[] = [];
+
+  for (let qaCycle = 1; qaCycle <= MAX_QA_CYCLES; qaCycle++) {
+    // 1. Check remaining time budget (use SHORT_TIMEOUT for modify, 60s buffer)
+    const elapsedMs = Date.now() - modifyStartTime;
+    const remainingMs = (SANDBOX_CONFIG.SHORT_TIMEOUT_SECONDS * 1000) - elapsedMs;
+    if (remainingMs < 60_000) {
+      console.warn(`[${logPrefix}] Skipping QA — insufficient time remaining (${Math.round(remainingMs / 1000)}s)`);
+      await ctx.runMutation(internal.sessions.updateInternal, {
+        id: sessionId,
+        qaStatus: "skipped",
+        qaError: "Insufficient time remaining",
+      });
+      return { qaPassed: true, qaResult: null, additionalFilesChanged };
+    }
+
+    // 2. Update status
+    if (qaCycle === 1) {
+      console.log(`[${logPrefix}] Running QA Agent...`);
+      await ctx.runMutation(internal.sessions.updateInternal, {
+        id: sessionId,
+        qaStatus: "validating",
+        qaRetryCount: 0,
+      });
+      await ctx.runMutation(api.messages.create, {
+        sessionId,
+        role: "assistant",
+        content: "Validating your website for visual quality, accessibility, and responsive behavior...",
+      });
+    } else {
+      console.log(`[${logPrefix}] QA re-validation (cycle ${qaCycle}/${MAX_QA_CYCLES})...`);
+      await ctx.runMutation(internal.sessions.updateInternal, {
+        id: sessionId,
+        qaStatus: "validating",
+        qaRetryCount: qaCycle - 1,
+      });
+    }
+
+    // 3. Run QA Agent
+    const qaAgentResult = await runQAAgent(
+      previewUrl,
+      architecture,
+      toolContext,
+      sandboxActions
+    );
+
+    // 4. Parse findings
+    qaResult = parseQAFindings(qaAgentResult.response);
+    console.log(`[${logPrefix}] QA result: ${qaResult.issuesFound} issues found across ${qaResult.routesChecked} routes`);
+
+    // 5. Check if passed
+    if (qaResult.passed || qaResult.issuesFound === 0) {
+      console.log(`[${logPrefix}] QA validation passed`);
+      await ctx.runMutation(internal.sessions.updateInternal, {
+        id: sessionId,
+        qaStatus: "success",
+        qaRetryCount: qaCycle - 1,
+      });
+
+      if (qaCycle > 1) {
+        await ctx.runMutation(api.messages.create, {
+          sessionId,
+          role: "assistant",
+          content: `Website validated successfully after ${qaCycle - 1} fix${qaCycle - 1 === 1 ? "" : "es"}.`,
+        });
+      } else {
+        await ctx.runMutation(api.messages.create, {
+          sessionId,
+          role: "assistant",
+          content: "Website validated — no visual or accessibility issues found.",
+        });
+      }
+      return { qaPassed: true, qaResult, additionalFilesChanged };
+    }
+
+    // 6. QA found issues — if retries remain, fix via Chat Agent
+    if (qaCycle < MAX_QA_CYCLES) {
+      console.log(`[${logPrefix}] QA found ${qaResult.issuesFound} issues, routing to Chat Agent for fixes...`);
+
+      await ctx.runMutation(internal.sessions.updateInternal, {
+        id: sessionId,
+        qaStatus: "fixing",
+        qaRetryCount: qaCycle,
+      });
+
+      await ctx.runMutation(api.messages.create, {
+        sessionId,
+        role: "assistant",
+        content: `Website validation found ${qaResult.issuesFound} issue${qaResult.issuesFound === 1 ? "" : "s"}. Auto-fixing...`,
+      });
+
+      // Format QA findings as Chat Agent fix instructions
+      const qaFixMessage = formatQARetryPrompt(
+        qaResult.allFindings,
+        architecture,
+        [...allFilesChanged, ...additionalFilesChanged]
+      );
+
+      // Run Chat Agent in fix mode
+      const fixResult = await runChatAgent(
+        qaFixMessage,
+        toolContext,
+        sandboxActions,
+        {},
+        architecture
+      );
+
+      // Track fixed files
+      if (fixResult.filesChanged) {
+        for (const f of fixResult.filesChanged) {
+          if (!additionalFilesChanged.includes(f)) {
+            additionalFilesChanged.push(f);
+          }
+        }
+      }
+
+      // Run npm install after fixes
+      try {
+        const installResult = await sandbox.commands.run("npm install", { cwd: PROJECT_DIR });
+        if (installResult.exitCode !== 0 && installResult.stderr.includes("ERESOLVE")) {
+          await sandbox.commands.run("npm install --legacy-peer-deps", { cwd: PROJECT_DIR });
+        }
+      } catch (error) {
+        console.warn(`[${logPrefix}] Post-QA-fix install error (non-fatal): ${error}`);
+      }
+
+      // Restart dev server for clean state before next QA cycle
+      await ensureDevServerRunning(sandbox, logPrefix);
+
+      continue;
+    }
+
+    // 7. Max QA retries exhausted — deliver with best effort
+    console.warn(`[${logPrefix}] QA validation incomplete after ${MAX_QA_CYCLES} cycles — ${qaResult.issuesFound} remaining issues`);
+
+    await ctx.runMutation(internal.sessions.updateInternal, {
+      id: sessionId,
+      qaStatus: "error",
+      qaError: `${qaResult.issuesFound} issues after ${MAX_QA_CYCLES} QA cycles`,
+      qaRetryCount: MAX_QA_CYCLES,
+    });
+
+    const issueSummary = qaResult.allFindings
+      .filter((f) => f.severity !== "minor")
+      .slice(0, 3)
+      .map((f) => `- ${f.category}: ${f.description}`)
+      .join("\n");
+
+    await ctx.runMutation(api.messages.create, {
+      sessionId,
+      role: "assistant",
+      content: `Website validation completed with ${qaResult.issuesFound} remaining issue${qaResult.issuesFound === 1 ? "" : "s"}:\n${issueSummary}\n\nThe app should still work — use the chat to address remaining issues.`,
+    });
+
+    return { qaPassed: false, qaResult, additionalFilesChanged };
+  }
+
+  return { qaPassed: false, qaResult, additionalFilesChanged };
 }
 
 /**
@@ -1095,6 +1575,7 @@ export const generate = action({
 
     // Track recent files for context scoring
     const recentFiles: string[] = [];
+    const generateStartTime = Date.now();
 
     try {
       // 1. Create sandbox
@@ -1103,11 +1584,13 @@ export const generate = action({
         timeoutMs: SANDBOX_CONFIG.TIMEOUT_SECONDS * 1000,
       });
 
-      // Clean up default template files — coder creates these fresh with design tokens/app content
-      for (const filePath of TEMPLATE_CLEANUP_FILES) {
-        await sandbox.commands.run(`rm -f ${filePath}`);
-      }
+      // Clean up default template files — write minimal stubs instead of deleting
+      // (deleting layout.tsx crashes the Next.js dev server)
+      await cleanupTemplateFiles(sandbox);
       // NOTE: components/ui/*.tsx (other than resizable) are pre-installed by shadcn and intentionally preserved
+
+      // Ensure the dev server survived the stub writes before returning the preview URL
+      await ensureDevServerRunning(sandbox, "generate");
 
       const sandboxId = sandbox.sandboxId;
       const previewUrl = `https://${sandbox.getHost(3000)}`;
@@ -1307,6 +1790,10 @@ export const generate = action({
           );
           schemaGenerated = schemaPipelineResult.schemaGenerated;
         }
+      } else if (hasSupabase) {
+        console.warn(`[generate] Supabase connected but Management API unavailable — ` +
+          `accessToken=${!!supabaseStatus?.supabaseAccessToken}, projectRef=${!!supabaseStatus?.supabaseProjectRef}. ` +
+          `Schema-first pipeline skipped.`);
       }
 
       // 6. Run Coder Agent with self-healing validation loop
@@ -1348,6 +1835,24 @@ export const generate = action({
 
       console.log(`[generate] Final file count: ${coderResult.filesChanged.length} files`);
 
+      // 6b. Run QA Agent with retry loop (after coder validation passes)
+      console.log("[generate] Running QA validation...");
+      const { qaPassed, qaResult: qaValidationResult } = await runQAWithRetry(
+        ctx, sessionId, architecture, previewUrl, toolContext, sandboxActions, sandbox,
+        {
+          coderLimits,
+          designTokensBlock,
+          schemaGenerated,
+        },
+        cumulativeFiles,
+        "generate",
+        generateStartTime
+      );
+
+      if (!qaPassed && qaValidationResult) {
+        console.warn(`[generate] QA completed with ${qaValidationResult.issuesFound} remaining issues`);
+      }
+
       // 7a. Auto-execute schema.sql if Supabase Management API is available
       // SKIP if schema was already executed in the schema-first pipeline
       let schemaResult: { success: boolean; error?: string; tableCount?: number } | null = null;
@@ -1376,6 +1881,17 @@ export const generate = action({
                 }
               }
             }
+          }
+        } else if (hasSupabase) {
+          console.warn(`[generate] schema.sql exists but Management API unavailable — schema execution skipped`);
+          const schemaContent = await sandboxActions.readFile("schema.sql");
+          if (schemaContent?.trim()) {
+            await ctx.runMutation(api.messages.create, {
+              sessionId,
+              role: "assistant",
+              content: `⚠️ Schema generated but could not be auto-executed — Supabase Management API access is not available. ` +
+                `Please copy the contents of \`schema.sql\` and run it manually in the [Supabase SQL Editor](https://supabase.com/dashboard/project/_/sql).`,
+            });
           }
         }
       }
@@ -1419,7 +1935,10 @@ export const generate = action({
         });
       }
 
-      // 8. Sync key files to Convex
+      // 8. Ensure dev server is running before delivering preview
+      await ensureDevServerRunning(sandbox, "generate");
+
+      // 9. Sync key files to Convex
       await syncFilesToConvex(ctx, sessionId, sandbox, "generate");
 
       return {
@@ -1438,6 +1957,19 @@ export const generate = action({
     }
   },
 });
+
+/**
+ * Detect if Chat Agent changes are significant enough to warrant QA validation.
+ * Triggers QA for: >=3 files changed OR any Next.js route files (page.tsx/layout.tsx) modified.
+ */
+function isBigUpdate(filesChanged: string[]): boolean {
+  if (filesChanged.length >= 3) return true;
+
+  // Check for route-related file changes (new/modified pages or layouts)
+  return filesChanged.some(
+    (f) => /^app\/.*page\.tsx$/.test(f) || /^app\/.*layout\.tsx$/.test(f)
+  );
+}
 
 /**
  * Modify an existing app using the Chat Agent.
@@ -1459,6 +1991,7 @@ export const modify = action({
 
     console.log(`[modify] Starting modification for session ${sessionId}`);
     console.log(`[modify] Message: ${message.substring(0, 100)}...`);
+    const modifyStartTime = Date.now();
 
     try {
       // 1. Get session info
@@ -1508,18 +2041,7 @@ export const modify = action({
 
           // Restart Next.js dev server for clean compilation with restored files
           console.log("[modify] Restarting dev server for clean compilation...");
-          try {
-            await sandbox.commands.run(`pkill -f "next" || true`);
-          } catch {
-            // pkill may throw due to signal termination — safe to ignore
-          }
-          await new Promise((resolve) => setTimeout(resolve, 1000));
-          try {
-            await sandbox.commands.run(`cd ${PROJECT_DIR} && npm run dev > /tmp/next-dev.log 2>&1 &`, { timeoutMs: 5000 });
-          } catch {
-            // Background process launch may throw — safe to ignore
-          }
-          await new Promise((resolve) => setTimeout(resolve, 8000));
+          await ensureDevServerRunning(sandbox, "modify");
 
           // Update session with new sandbox info
           await ctx.runMutation(internal.sessions.updateInternal, {
@@ -1681,50 +2203,105 @@ export const modify = action({
 
       console.log(`[modify] Modified ${chatResult.filesChanged.length} files`);
 
-      // 7b. Auto-execute schema.sql if it was changed and Management API is available
-      if (chatResult.filesChanged.includes("schema.sql") && supabaseStatus?.supabaseAccessToken && supabaseStatus?.supabaseProjectRef) {
-        const schemaContent = await sandboxActions.readFile("schema.sql");
-        if (schemaContent?.trim()) {
-          console.log("[modify] Executing updated schema.sql via Management API...");
-          const token = await refreshTokenIfNeeded(ctx, sessionId, supabaseStatus);
-          if (token) {
-            let schemaResult = await executeSchemaWithRetry(
-              ctx,
-              sessionId,
-              schemaContent,
-              supabaseStatus.supabaseProjectRef,
-              token,
-            );
+      // 7a. QA validation for big updates
+      if (isBigUpdate(chatResult.filesChanged)) {
+        console.log(`[modify] Big update detected (${chatResult.filesChanged.length} files changed) — running QA validation...`);
 
-            // Health check: verify tables actually exist
-            let tableCount = 0;
-            if (schemaResult.success) {
-              const healthCheck = await verifySchemaHealthCheck(ctx, sessionId, supabaseStatus.supabaseProjectRef, token);
-              if (!healthCheck.success) {
-                schemaResult = { success: false, error: healthCheck.error };
-              } else {
-                tableCount = healthCheck.tableCount;
-              }
+        const architecture = session.architecture ?? "";
+        const { qaPassed, qaResult: modifyQAResult, additionalFilesChanged } = await runQAForModify(
+          ctx, sessionId, architecture, previewUrl!, toolContext, sandboxActions, sandbox,
+          chatResult.filesChanged,
+          "modify",
+          modifyStartTime
+        );
+
+        if (!qaPassed && modifyQAResult) {
+          console.warn(`[modify] QA completed with ${modifyQAResult.issuesFound} remaining issues`);
+        }
+
+        // Include QA-fix files in the result
+        if (additionalFilesChanged.length > 0) {
+          for (const f of additionalFilesChanged) {
+            if (!chatResult.filesChanged.includes(f)) {
+              chatResult.filesChanged.push(f);
             }
+          }
+        }
+      } else {
+        console.log(`[modify] Small update (${chatResult.filesChanged.length} files) — skipping QA validation`);
+      }
 
-            if (schemaResult.success) {
-              await ctx.runMutation(api.messages.create, {
+      // 7b. Auto-execute schema.sql if it was changed
+      if (chatResult.filesChanged.includes("schema.sql")) {
+        const hasAccessToken = !!supabaseStatus?.supabaseAccessToken;
+        const hasProjectRef = !!supabaseStatus?.supabaseProjectRef;
+
+        if (!hasAccessToken || !hasProjectRef) {
+          console.warn(
+            `[modify] schema.sql changed but cannot auto-execute: ` +
+            `accessToken=${hasAccessToken}, projectRef=${hasProjectRef}`
+          );
+          await ctx.runMutation(api.messages.create, {
+            sessionId,
+            role: "assistant",
+            content: `⚠️ Schema updated but could not be auto-executed — Supabase Management API access is not available. ` +
+              `Please copy the contents of \`schema.sql\` and run it manually in the [Supabase SQL Editor](https://supabase.com/dashboard/project/_/sql).`,
+          });
+        } else {
+          const projectRef = supabaseStatus!.supabaseProjectRef!;
+          const schemaContent = await sandboxActions.readFile("schema.sql");
+          if (schemaContent?.trim()) {
+            console.log("[modify] Executing updated schema.sql via Management API...");
+            const token = await refreshTokenIfNeeded(ctx, sessionId, supabaseStatus);
+            if (token) {
+              let schemaResult = await executeSchemaWithRetry(
+                ctx,
                 sessionId,
-                role: "assistant",
-                content: `✅ Database ready: ${tableCount} table${tableCount === 1 ? "" : "s"} updated successfully.`,
-              });
+                schemaContent,
+                projectRef,
+                token,
+              );
+
+              // Health check: verify tables actually exist
+              let tableCount = 0;
+              if (schemaResult.success) {
+                const healthCheck = await verifySchemaHealthCheck(ctx, sessionId, projectRef, token);
+                if (!healthCheck.success) {
+                  schemaResult = { success: false, error: healthCheck.error };
+                } else {
+                  tableCount = healthCheck.tableCount;
+                }
+              }
+
+              if (schemaResult.success) {
+                await ctx.runMutation(api.messages.create, {
+                  sessionId,
+                  role: "assistant",
+                  content: `✅ Database ready: ${tableCount} table${tableCount === 1 ? "" : "s"} updated successfully.`,
+                });
+              } else {
+                await ctx.runMutation(api.messages.create, {
+                  sessionId,
+                  role: "assistant",
+                  content: `⚠️ Database setup failed: ${schemaResult.error}`,
+                });
+              }
             } else {
+              console.warn("[modify] Token refresh returned null — cannot execute schema");
               await ctx.runMutation(api.messages.create, {
                 sessionId,
                 role: "assistant",
-                content: `⚠️ Database setup failed: ${schemaResult.error}`,
+                content: `⚠️ Database token expired and could not be refreshed. Please reconnect Supabase via OAuth or run \`schema.sql\` manually in the SQL Editor.`,
               });
             }
           }
         }
       }
 
-      // 8. Sync key files to Convex
+      // 8. Ensure dev server is running before delivering preview
+      await ensureDevServerRunning(sandbox, "modify");
+
+      // 9. Sync key files to Convex
       await syncFilesToConvex(ctx, sessionId, sandbox, "modify");
 
       return {

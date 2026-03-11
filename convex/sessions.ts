@@ -99,6 +99,15 @@ export const updateInternal = internalMutation({
     )),
     coderRetryCount: v.optional(v.number()),
     coderError: v.optional(v.string()),
+    qaStatus: v.optional(v.union(
+      v.literal("validating"),
+      v.literal("fixing"),
+      v.literal("success"),
+      v.literal("error"),
+      v.literal("skipped")
+    )),
+    qaRetryCount: v.optional(v.number()),
+    qaError: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const { id, ...updates } = args;

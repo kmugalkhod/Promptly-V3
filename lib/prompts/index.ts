@@ -8,3 +8,4 @@ export { ARCHITECTURE_PROMPT } from "./architecture";
 export { CODER_PROMPT, formatCoderRetryPrompt } from "./coder";
 export { SCHEMA_PROMPT, formatSchemaRetryPrompt } from "./schema";
 export { validateGlobalsCss } from "./shared";
+export { QA_PROMPT, formatQARetryPrompt } from "./qa";
